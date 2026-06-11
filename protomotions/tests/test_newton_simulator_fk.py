@@ -444,7 +444,7 @@ def main():
         "--robot",
         type=str,
         default="g1",
-        choices=["g1", "h1", "h1_2", "smpl", "smplx", "amp", "rigv1"],
+        choices=["g1", "h1", "h1_2", "smpl", "smplx", "amp", "rigv1", "ms_human_lower"],
         help="Robot type",
     )
     parser.add_argument(

@@ -201,6 +201,7 @@ class NewtonSimulator(Simulator):
         self.robot.add_mjcf(
             asset_path,
             ignore_names=["floor", "ground"],
+            ignore_classes=["wrap"],
             collapse_fixed_joints=False,
             floating=not self.robot_config.asset.fix_base_link,
             enable_self_collisions=self.robot_config.asset.self_collisions,

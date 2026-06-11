@@ -99,6 +99,7 @@ class KinematicInfo:
     parent_indices: List[int]
     local_pos: torch.Tensor
     local_rot_ref_mat: torch.Tensor
+    local_joint_pos: torch.Tensor
     hinge_axes_map: Dict[
         int, torch.Tensor
     ]  # Maps body_idx to its hinge axes [NumHingeDOFs, 3]
@@ -116,6 +117,9 @@ class KinematicInfo:
             kwargs["dtype"] = dtype
         self.local_pos = self.local_pos.to(**kwargs)
         self.local_rot_ref_mat = self.local_rot_ref_mat.to(**kwargs)
+        if not hasattr(self, "local_joint_pos"):
+            self.local_joint_pos = torch.zeros_like(self.local_pos)
+        self.local_joint_pos = self.local_joint_pos.to(**kwargs)
         self.dof_limits_lower = self.dof_limits_lower.to(**kwargs)
         self.dof_limits_upper = self.dof_limits_upper.to(**kwargs)
         self.hinge_axes_map = {
@@ -432,6 +436,7 @@ def extract_kinematic_info(mjcf_path: str) -> KinematicInfo:
     parent_indices_list = []
     local_pos_list = []
     local_quat_list = []
+    local_joint_pos_list = []
     dof_limits_lower_list = []
     dof_limits_upper_list = []
 
@@ -467,6 +472,7 @@ def extract_kinematic_info(mjcf_path: str) -> KinematicInfo:
         )
         local_pos_list.append(pos_val)
         local_quat_list.append(quat_mjcf)
+        local_joint_pos = np.zeros(3, dtype=np.float32)
 
         if body_idx == 0:  # Root Body
             assert np.allclose(
@@ -490,6 +496,23 @@ def extract_kinematic_info(mjcf_path: str) -> KinematicInfo:
                     len(joints) == 1 or len(joints) == 3
                 ), f"Body {body_name} has {len(joints)} joints, expected 1 or 3"
                 for joint in joints:
+                    joint_pos = joint.pos
+                    if joint_pos is None and joint.dclass is not None:
+                        joint_pos = joint.dclass.joint.pos
+                    joint_pos_val = np.array(
+                        joint_pos if joint_pos is not None else [0.0, 0.0, 0.0],
+                        dtype=np.float32,
+                    )
+                    if len(current_hinge_axes) == 0:
+                        local_joint_pos = joint_pos_val
+                    else:
+                        assert np.allclose(
+                            local_joint_pos, joint_pos_val, atol=1e-6
+                        ), (
+                            f"Body '{body_name}' has multiple hinge joints with "
+                            "different joint positions, which is not supported."
+                        )
+
                     # Resolve attributes: direct or inherited from default class
                     # (dm_control doesn't auto-resolve class-inherited attributes)
                     axis = joint.axis
@@ -517,6 +540,8 @@ def extract_kinematic_info(mjcf_path: str) -> KinematicInfo:
                 current_hinge_axes_np = np.array(current_hinge_axes, dtype=np.float32)
                 hinge_axes_map_dict[body_idx] = torch.from_numpy(current_hinge_axes_np)
 
+        local_joint_pos_list.append(local_joint_pos)
+
         child_bodies = mjcf_body.body
         for child in child_bodies:
             _traverse(child, body_idx)
@@ -535,6 +560,9 @@ def extract_kinematic_info(mjcf_path: str) -> KinematicInfo:
     local_pos_numpy = np.array(
         local_pos_list, dtype=np.float32
     )  # (N, 3) concatenated positions
+    local_joint_pos_numpy = np.array(
+        local_joint_pos_list, dtype=np.float32
+    )  # (N, 3) concatenated hinge pivot positions in body frames
 
     num_articulated_dofs = sum(
         len(axes_tensor) for axes_tensor in hinge_axes_map_dict.values()
@@ -550,6 +578,7 @@ def extract_kinematic_info(mjcf_path: str) -> KinematicInfo:
         parent_indices=parent_indices_list,
         local_pos=torch.from_numpy(local_pos_numpy),
         local_rot_ref_mat=local_rot_ref_mat_tensor,
+        local_joint_pos=torch.from_numpy(local_joint_pos_numpy),
         hinge_axes_map=hinge_axes_map_dict,
         nq=num_articulated_dofs + 7,  # 7 for root free joint (3 pos, 4 quat)
         nv=num_articulated_dofs + 6,  # 6 for root free joint (3 vel, 3 ang_vel)
@@ -1028,6 +1057,16 @@ def compute_forward_kinematics_from_transforms(
         .to(device)
         .to(dtype)
     )
+    local_joint_pos = (
+        getattr(
+            kinematic_info,
+            "local_joint_pos",
+            torch.zeros_like(kinematic_info.local_pos),
+        )[None, ...]
+        .expand(B, -1, -1)
+        .to(device)
+        .to(dtype)
+    )
 
     world_pos = torch.zeros(B, Nb, 3, device=device, dtype=dtype)
     world_rot_mat = torch.zeros(B, Nb, 3, 3, device=device, dtype=dtype)
@@ -1055,9 +1094,17 @@ def compute_forward_kinematics_from_transforms(
                 parent_rot_mat_world, effective_local_rot
             )
 
-            # Calculate world position: ParentPos + ParentRot * LocalPosOffset
+            # Calculate world position. MJCF hinge positions are expressed in the
+            # child body frame, so nonzero joint pivots move the body origin as
+            # the joint rotates: T_body(q) = T_body0 * T(pivot) * R(q) * T(-pivot).
+            pivot = local_joint_pos[:, i, :]
+            local_offset = (
+                local_pos[:, i, :]
+                + torch.matmul(ref_rot_mat, pivot[:, :, None]).squeeze(-1)
+                - torch.matmul(effective_local_rot, pivot[:, :, None]).squeeze(-1)
+            )
             offset_in_world = torch.matmul(
-                parent_rot_mat_world, local_pos[:, i, :, None]
+                parent_rot_mat_world, local_offset[:, :, None]
             ).squeeze(-1)
             world_pos[:, i, :] = parent_pos_world + offset_in_world
 

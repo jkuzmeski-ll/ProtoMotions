@@ -20,7 +20,8 @@ def robot_config(robot_name: str, **updates) -> RobotConfig:
     """Factory function to create robot configuration based on robot type.
 
     Args:
-        robot_name: Name of the robot type (smpl, smplx, amp, g1, h1_2, soma23, rigv1)
+        robot_name: Name of the robot type (smpl, smplx, amp, g1, h1_2, soma23, rigv1, ms_human_lower,
+            ms_human_lower_s003)
         **updates: Optional field updates to apply to the robot config
 
     Returns:
@@ -57,6 +58,14 @@ def robot_config(robot_name: str, **updates) -> RobotConfig:
         from protomotions.robot_configs.soma23 import Soma23RobotConfig
 
         config = Soma23RobotConfig()
+    elif robot_name == "ms_human_lower":
+        from protomotions.robot_configs.ms_human_lower import MSHumanLowerRobotConfig
+
+        config = MSHumanLowerRobotConfig()
+    elif robot_name == "ms_human_lower_s003":
+        from protomotions.robot_configs.ms_human_lower_s003 import MSHumanLowerS003RobotConfig
+
+        config = MSHumanLowerS003RobotConfig()
     else:
         raise ValueError(f"Invalid robot name: {robot_name}")
 

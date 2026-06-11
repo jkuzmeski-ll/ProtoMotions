@@ -13,8 +13,12 @@ exps/*
 **/.DS_Store
 wandb/*
 newton_source/*
+protomotions/data/assets/mjcf/ms_human_700/
 data/amass/*.pkl
 .claude/*
 !.claude/commands/
 .cursor/
 renders/
+
+# Large c3d motion capture source files (too big for GitHub)
+*.c3d
