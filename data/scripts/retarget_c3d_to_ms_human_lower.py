@@ -77,8 +77,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, default=Path("data/ms-human-lower-retargeted/proto/S003_v3d_angles.motion"))
     parser.add_argument("--start-frame", type=int, default=1, help="First 1-based C3D frame to export.")
     parser.add_argument("--end-frame", type=int, default=None, help="Last 1-based C3D frame to export, inclusive.")
-    parser.add_argument("--output-fps", type=int, default=50, help="Downsampled output FPS.")
-    parser.add_argument("--max-frames", type=int, default=2000, help="Optional frame cap after downsampling; <=0 disables.")
+    parser.add_argument(
+        "--output-fps",
+        type=int,
+        default=None,
+        help="Optional target FPS. Defaults to the native C3D point rate; lower values decimate frames.",
+    )
+    parser.add_argument("--max-frames", type=int, default=2000, help="Optional frame cap after optional FPS decimation; <=0 disables.")
     parser.add_argument("--height-offset", type=float, default=0.04)
     parser.add_argument("--force-threshold", type=float, default=50.0, help="GRF magnitude threshold for contact labels.")
     return parser.parse_args()
@@ -92,10 +97,12 @@ def _unit_scale(data) -> float:
     return 0.001 if data.point_units.lower() in {"mm", "millimeter", "millimeters"} else 1.0
 
 
-def _load_window(c3d: Path, start_frame: int, end_frame: int | None, output_fps: int, max_frames: int):
+def _load_window(c3d: Path, start_frame: int, end_frame: int | None, output_fps: int | None, max_frames: int):
     metadata = read_metadata(c3d)
     source_fps = float(metadata.parameters.get("POINT.RATE", metadata.header.point_rate))
-    factor = max(1, round(source_fps / output_fps))
+    if output_fps is not None and output_fps <= 0:
+        raise ValueError(f"--output-fps must be positive when set; got {output_fps}")
+    factor = 1 if output_fps is None else max(1, round(source_fps / output_fps))
     if end_frame is None:
         if max_frames > 0:
             end_frame = min(metadata.header.last_frame, start_frame + factor * max_frames - 1)
@@ -104,7 +111,9 @@ def _load_window(c3d: Path, start_frame: int, end_frame: int | None, output_fps:
     data = load_c3d(c3d, start_frame=start_frame, end_frame=end_frame)
     if factor > 1:
         data.markers = data.markers[::factor]
-    return data, int(round(source_fps / factor))
+    loaded_fps = float(source_fps / factor)
+    data.point_rate = loaded_fps
+    return data, loaded_fps
 
 
 def extract_joint_angles(data, dof_names: list[str]) -> torch.Tensor:

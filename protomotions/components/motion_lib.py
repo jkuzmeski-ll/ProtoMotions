@@ -45,7 +45,7 @@ from protomotions.simulator.base_simulator.simulator_state import (
     StateConversion,
 )
 from protomotions.utils.rotations import quat_to_exp_map
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from protomotions.utils.motion_interpolation_utils import (
     interpolate_pos,
@@ -448,6 +448,12 @@ class MotionLib:
             )
 
             curr_motion = torch.load(curr_file, weights_only=False)
+            valid_motion_fields = {field_info.name for field_info in fields(RobotState)}
+            curr_motion = {
+                key: value
+                for key, value in curr_motion.items()
+                if key in valid_motion_fields
+            }
             curr_motion = RobotState.from_dict(
                 curr_motion, state_conversion=StateConversion.COMMON
             )

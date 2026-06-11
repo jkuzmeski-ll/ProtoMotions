@@ -30,6 +30,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import warp as wp
+from newton._src.sim.ik.ik_common import IKJacobianType
+from newton._src.sim.ik.ik_objectives import IKObjective
 
 from protomotions.components.pose_lib import (
     compute_cartesian_velocity,
@@ -39,8 +42,15 @@ from protomotions.components.pose_lib import (
 )
 from protomotions.robot_configs.factory import robot_config
 from protomotions.simulator.base_simulator.simulator_state import StateConversion
-from protomotions.utils.c3d_io import marker_index
+from protomotions.utils.c3d_io import events_from_metadata, marker_index, read_metadata
 from protomotions.utils.rotations import matrix_to_quaternion
+from protomotions.utils.treadmill_overground import (
+    apply_virtual_origin_mapping,
+    apply_virtual_origin_mapping_with_speed_profile,
+    c3d_contact_mask_from_events,
+    c3d_speed_profile_from_events,
+    estimate_speed_profile_from_stance_points,
+)
 
 from retarget_c3d_to_ms_human_lower import (  # noqa: E402
     PELVIS_MARKERS,
@@ -53,13 +63,14 @@ from retarget_c3d_to_ms_human_lower import (  # noqa: E402
 
 
 MARKER_BODY_MAP: dict[str, str] = {
-    # Pelvis landmarks and Visual3D-modeled hip centers.
+    # Pelvis landmarks.
     "RASI": "pelvis",
     "LASI": "pelvis",
     "RPSI": "pelvis",
     "LPSI": "pelvis",
-    "RIGHT_HIP": "pelvis",
-    "LEFT_HIP": "pelvis",
+    # Visual3D-modeled hip centers at the proximal femur/hip joint.
+    "RIGHT_HIP": "femur_r",
+    "LEFT_HIP": "femur_l",
     # Lateral lower-limb markers.  S003 does not have medial knee/ankle markers.
     "RKNE": "femur_r",
     "LKNE": "femur_l",
@@ -75,17 +86,7 @@ MARKER_BODY_MAP: dict[str, str] = {
     "LTOE": "toes_l",
 }
 
-BODY_SEGMENT_FRAME_MAP: dict[str, str] = {
-    "pelvis": "PEL",
-    "femur_r": "RFE",
-    "femur_l": "LFE",
-    "tibia_r": "RTI",
-    "tibia_l": "LTI",
-    "calcn_r": "RFO",
-    "calcn_l": "LFO",
-    "toes_r": "RTO",
-    "toes_l": "LTO",
-}
+FOOT_MARKERS = {"RHEE", "LHEE", "RTOE", "LTOE"}
 
 
 def _v3d_points_to_model(points: np.ndarray) -> np.ndarray:
@@ -101,6 +102,14 @@ def _v3d_points_to_model(points: np.ndarray) -> np.ndarray:
     result = np.empty_like(points, dtype=np.float32)
     result[..., 0] = -points[..., 1]
     result[..., 1] = points[..., 0]
+    result[..., 2] = points[..., 2]
+    return result
+
+
+def _model_points_to_v3d(points: np.ndarray) -> np.ndarray:
+    result = np.empty_like(points, dtype=np.float32)
+    result[..., 0] = points[..., 1]
+    result[..., 1] = -points[..., 0]
     result[..., 2] = points[..., 2]
     return result
 
@@ -124,6 +133,20 @@ class RMSStats:
     num_valid_samples: int
 
 
+@dataclass
+class NewtonMarkerIKContext:
+    solver: object
+    joint_q_out: object
+    local_offsets: torch.Tensor
+    target_positions: object
+    valid: object
+    link_indices: object
+    offset_sums: object
+    offset_counts: object
+    marker_pred: object
+    device: torch.device
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("c3d", type=Path, help="Visual3D/Vicon C3D file.")
@@ -137,20 +160,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report", type=Path, default=None, help="Optional JSON marker-RMS report path.")
     parser.add_argument("--start-frame", type=int, default=1, help="First 1-based C3D frame to export.")
     parser.add_argument("--end-frame", type=int, default=None, help="Last 1-based C3D frame to export, inclusive.")
-    parser.add_argument("--output-fps", type=int, default=50, help="Downsampled output FPS.")
-    parser.add_argument("--max-frames", type=int, default=2000, help="Optional frame cap after downsampling; <=0 disables.")
-    parser.add_argument("--calibration-frame", type=int, default=0, help="0-based downsampled frame used for virtual marker offsets.")
+    parser.add_argument(
+        "--output-fps",
+        type=int,
+        default=None,
+        help="Optional target FPS. Defaults to the native C3D point rate; lower values decimate frames.",
+    )
+    parser.add_argument("--max-frames", type=int, default=2000, help="Optional frame cap after optional FPS decimation; <=0 disables.")
+    parser.add_argument("--calibration-frame", type=int, default=0, help="0-based loaded frame used for virtual marker offsets.")
     parser.add_argument(
         "--offset-calibration",
         choices=["frame", "mean", "median"],
         default="mean",
         help="How to estimate rigid local marker offsets before IK. Whole-window mean/median is much more robust than one frame.",
-    )
-    parser.add_argument(
-        "--marker-offset-source",
-        choices=["qpos", "v3d-segment"],
-        default="qpos",
-        help="Calibrate marker link offsets from the model warm start or from Visual3D segment frames.",
     )
     parser.add_argument(
         "--root-orientation",
@@ -174,6 +196,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--newton-step-size", type=float, default=1.0)
     parser.add_argument("--marker-weight", type=float, default=1.0)
     parser.add_argument(
+        "--foot-marker-weight",
+        type=float,
+        default=1.0,
+        help="Newton IK weight for heel/toe markers. Higher values prioritize contact-body marker accuracy.",
+    )
+    parser.add_argument(
         "--offset-refine-passes",
         type=int,
         default=0,
@@ -193,11 +221,136 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Clamp only the warm-start DOFs to robot limits before Newton IK. Disabled by default for diagnostics.",
     )
-    parser.add_argument("--segment-origin-weight", type=float, default=0.0, help="Optional Newton IK weight for Visual3D segment-origin position targets.")
-    parser.add_argument("--segment-rotation-weight", type=float, default=0.0, help="Optional Newton IK weight for Visual3D segment-frame rotation targets.")
     parser.add_argument("--height-offset", type=float, default=0.04)
+    parser.add_argument(
+        "--joint-angle-plot-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for final joint-angle plots. Defaults to a sibling 'plots' directory next to the output proto "
+            "directory, or '<output parent>/plots' otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--no-joint-angle-plots",
+        action="store_true",
+        help="Disable writing final joint-angle plots.",
+    )
     parser.add_argument("--force-threshold", type=float, default=50.0, help="GRF magnitude threshold for contact labels.")
+    parser.add_argument(
+        "--treadmill-overground",
+        action="store_true",
+        help="Apply treadmill-to-overground virtual-origin mapping to marker/segment point trajectories before IK.",
+    )
+    parser.add_argument(
+        "--treadmill-speed-mps",
+        type=float,
+        default=None,
+        help="Positive belt speed in m/s. If omitted with --treadmill-overground, estimate it from stance foot markers.",
+    )
     return parser.parse_args()
+
+
+def _treadmill_position_labels(data) -> list[str]:
+    labels = set(PELVIS_MARKERS)
+    labels.update(MARKER_BODY_MAP.keys())
+
+    present = []
+    for label in sorted(labels):
+        try:
+            marker_index(data.marker_labels, label)
+        except KeyError:
+            continue
+        present.append(label)
+    return present
+
+
+def _apply_treadmill_overground_if_requested(data, output_fps: int, args) -> None:
+    if not args.treadmill_overground:
+        return
+
+    scale = _unit_scale(data)
+    metadata = read_metadata(args.c3d)
+    events = events_from_metadata(metadata)
+    source_fps = float(metadata.parameters.get("POINT.RATE", metadata.header.point_rate))
+    speed_mps = args.treadmill_speed_mps
+    speed_profile = None
+    speed_source = "constant"
+    valid_stance_samples = 0
+    if speed_mps is None:
+        speed_profile = c3d_speed_profile_from_events(
+            events,
+            data.markers.shape[0],
+            output_fps,
+            source_fps,
+            data.first_frame,
+            data.start_frame,
+        )
+        speed_source = "c3d-speed-events" if speed_profile is not None else "stance-estimate"
+
+    if speed_mps is None and speed_profile is None:
+        foot_labels = ["RHEE", "RTOE", "LHEE", "LTOE"]
+        foot_points = []
+        foot_sides = []
+        for label in foot_labels:
+            try:
+                foot_points.append(_point(data, label).astype(np.float32) * scale)
+            except KeyError:
+                continue
+            foot_sides.append(label[0])
+        if not foot_points:
+            raise ValueError("No foot markers found for treadmill speed estimation; pass --treadmill-speed-mps.")
+        foot_points_model = _v3d_points_to_model(np.stack(foot_points, axis=1))
+        event_stance_mask = c3d_contact_mask_from_events(
+            events,
+            data.markers.shape[0],
+            output_fps,
+            source_fps,
+            data.first_frame,
+            data.start_frame,
+            foot_sides,
+        )
+        speed_profile, valid_stance_samples = estimate_speed_profile_from_stance_points(
+            foot_points_model,
+            output_fps,
+            event_stance_mask=event_stance_mask,
+        )
+        if event_stance_mask is not None:
+            speed_source = "stance-estimate-with-c3d-contact-events"
+
+    position_labels = _treadmill_position_labels(data)
+    if not position_labels:
+        raise ValueError("No positional marker/segment labels found for treadmill-overground mapping.")
+    marker_indices = [marker_index(data.marker_labels, label) for label in position_labels]
+    points_model = _v3d_points_to_model(data.markers[:, marker_indices].astype(np.float32) * scale)
+    if speed_profile is None:
+        mapped_model, report = apply_virtual_origin_mapping(points_model, output_fps, float(speed_mps))
+    else:
+        mapped_model, report = apply_virtual_origin_mapping_with_speed_profile(
+            points_model,
+            output_fps,
+            speed_profile,
+            estimated=speed_source != "c3d-speed-events",
+            valid_stance_samples=valid_stance_samples,
+            speed_source=speed_source,
+        )
+    data.markers[:, marker_indices] = _model_points_to_v3d(mapped_model) / scale
+    args._treadmill_mapping = {
+        "enabled": True,
+        "speed_mps": report.speed_mps,
+        "mean_speed_mps": report.speed_mps,
+        "speed_source": report.speed_source,
+        "speed_change_frames": list(report.speed_change_frames),
+        "estimated_speed": report.estimated,
+        "valid_stance_samples": valid_stance_samples,
+        "total_displacement_m": report.total_displacement_m,
+        "mapped_labels": position_labels,
+    }
+    print(
+        "Applied treadmill-to-overground mapping: "
+        f"mean_speed={report.speed_mps:.4f} m/s total_displacement={report.total_displacement_m:.3f} m "
+        f"labels={len(position_labels)} source={report.speed_source} changes={len(report.speed_change_frames)}"
+    )
 
 
 def _normalized_marker_positions(data) -> np.ndarray:
@@ -341,51 +494,6 @@ def _calibrate_local_offsets(ki, qpos: torch.Tensor, marker_set: MarkerSet, cali
         return offsets
 
 
-def _calibrate_local_offsets_from_v3d_segments(
-    data,
-    ki,
-    qpos: torch.Tensor,
-    marker_set: MarkerSet,
-    calibration_frame: int,
-    mode: str,
-) -> torch.Tensor:
-    calibration_frame = max(0, min(calibration_frame, qpos.shape[0] - 1))
-    with torch.no_grad():
-        root_pos, joint_rot_mats = extract_transforms_from_qpos(ki, qpos)
-        _, body_rot = compute_forward_kinematics_from_transforms(ki, root_pos, joint_rot_mats)
-
-        offsets = torch.empty((len(marker_set.labels), 3), device=qpos.device, dtype=qpos.dtype)
-        for marker_idx, marker_label in enumerate(marker_set.labels):
-            body_name = MARKER_BODY_MAP[marker_label]
-            body_idx = int(marker_set.body_indices[marker_idx].item())
-            origin, segment_rot = _v3d_segment_frames(data, BODY_SEGMENT_FRAME_MAP[body_name], qpos.device)
-            local_samples = torch.matmul(
-                segment_rot.transpose(-1, -2),
-                (marker_set.targets[:, marker_idx] - origin).unsqueeze(-1),
-            ).squeeze(-1)
-
-            valid = marker_set.valid[:, marker_idx]
-            if mode == "frame":
-                if not bool(valid[calibration_frame]):
-                    raise ValueError(f"Calibration frame has an invalid marker sample for {marker_label}.")
-                segment_offset = local_samples[calibration_frame]
-            else:
-                samples = local_samples[valid]
-                if samples.numel() == 0:
-                    raise ValueError(f"No finite samples available while calibrating marker {marker_label}.")
-                if mode == "median":
-                    segment_offset = samples.median(dim=0).values
-                elif mode == "mean":
-                    segment_offset = samples.mean(dim=0)
-                else:
-                    raise ValueError(f"Unsupported offset calibration mode: {mode}")
-
-            link_to_segment = torch.matmul(body_rot[calibration_frame, body_idx].transpose(-1, -2), segment_rot[calibration_frame])
-            offsets[marker_idx] = torch.matmul(link_to_segment, segment_offset[:, None]).squeeze(-1)
-
-        return offsets
-
-
 def _compute_fk_functional(ki, root_pos: torch.Tensor, joint_rot_mats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Functional FK variant that avoids in-place tensor writes in autograd graphs."""
     device = root_pos.device
@@ -453,72 +561,113 @@ def _compute_rms_stats(ki, qpos: torch.Tensor, marker_set: MarkerSet, local_offs
     return RMSStats(overall_mm=overall_mm, per_marker_mm=per_marker_mm, num_valid_samples=total_count)
 
 
-def _normalized_point(data, label: str, device: torch.device) -> torch.Tensor:
-    scale = _unit_scale(data)
-    point = torch.from_numpy(_v3d_points_to_model(_point(data, label).astype(np.float32) * scale)).to(device=device, dtype=torch.float32)
-    pelvis = _v3d_points_to_model(np.stack([_point(data, name) for name in PELVIS_MARKERS], axis=0).astype(np.float32) * scale)
-    root0_xy = torch.from_numpy(np.nanmean(pelvis, axis=0)[0, :2]).to(device=device, dtype=torch.float32)
-    point[:, :2] -= root0_xy
-    return point
+def _quat_rotate_inverse_xyzw(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    quat_xyz = -quat[..., :3]
+    quat_w = quat[..., 3:4]
+    t = 2.0 * torch.cross(quat_xyz, vec, dim=-1)
+    return vec + quat_w * t + torch.cross(quat_xyz, t, dim=-1)
 
 
-def _v3d_segment_frames(data, prefix: str, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
-    origin = _normalized_point(data, prefix + "O", device)
-    # Visual3D segment-frame point labels: L=mediolateral, A=anteroposterior,
-    # P=vertical.  After mapping into the model frame, A is +X/anterior and L is
-    # +Y/left.
-    x_hint = _normalized_point(data, prefix + "A", device) - origin
-    y_hint = _normalized_point(data, prefix + "L", device) - origin
-    z_hint = _normalized_point(data, prefix + "P", device) - origin
-    x_axis = x_hint / torch.linalg.norm(x_hint, dim=-1, keepdim=True).clamp_min(1e-8)
-    y_axis = y_hint - (y_hint * x_axis).sum(dim=-1, keepdim=True) * x_axis
-    y_axis = y_axis / torch.linalg.norm(y_axis, dim=-1, keepdim=True).clamp_min(1e-8)
-    z_axis = torch.cross(x_axis, y_axis, dim=-1)
-    z_axis = torch.where((z_axis * z_hint).sum(dim=-1, keepdim=True) < 0.0, -z_axis, z_axis)
-    z_axis = z_axis / torch.linalg.norm(z_axis, dim=-1, keepdim=True).clamp_min(1e-8)
-    y_axis = torch.cross(z_axis, x_axis, dim=-1)
-    y_axis = y_axis / torch.linalg.norm(y_axis, dim=-1, keepdim=True).clamp_min(1e-8)
-    return origin, torch.stack([x_axis, y_axis, z_axis], dim=-1)
+def _newton_context_body_transforms(args, marker_set: MarkerSet) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if not hasattr(args, "_newton_marker_context"):
+        return None
+    context: NewtonMarkerIKContext = args._newton_marker_context
+    body_q = wp.to_torch(context.solver._impl.body_q)
+    body_indices = marker_set.body_indices.to(device=body_q.device, dtype=torch.long)
+    body_pos = body_q[:, body_indices, :3]
+    body_quat_xyzw = body_q[:, body_indices, 3:7]
+    return body_pos, body_quat_xyzw
 
 
-def _sliding_mean_offsets(local_samples: torch.Tensor, valid: torch.Tensor, window: int) -> torch.Tensor:
-    if window <= 1:
-        return local_samples
-    radius = window // 2
-    offsets = torch.empty_like(local_samples)
-    for frame_idx in range(local_samples.shape[0]):
-        start = max(0, frame_idx - radius)
-        end = min(local_samples.shape[0], frame_idx + radius + 1)
-        sample_window = local_samples[start:end]
-        valid_window = valid[start:end].to(local_samples.dtype)[..., None]
-        denom = valid_window.sum(dim=0).clamp_min(1.0)
-        offsets[frame_idx] = (sample_window * valid_window).sum(dim=0) / denom
-    return offsets
+def _calibrate_local_offsets_from_newton_context(args, marker_set: MarkerSet, calibration_frame: int, mode: str) -> torch.Tensor | None:
+    if not hasattr(args, "_newton_marker_context"):
+        return None
+    context: NewtonMarkerIKContext = args._newton_marker_context
+    body_q = context.solver._impl.body_q
+    calibration_frame = max(0, min(calibration_frame, body_q.shape[0] - 1))
+
+    if mode == "frame":
+        valid = marker_set.valid[calibration_frame]
+        if not bool(valid.all()):
+            missing = [label for label, is_valid in zip(marker_set.labels, valid.tolist()) if not is_valid]
+            raise ValueError(
+                "Calibration frame has invalid marker samples for: "
+                + ", ".join(missing)
+                + ". Choose another --calibration-frame."
+            )
+        wp.launch(
+            _set_marker_local_offsets_from_frame,
+            dim=len(marker_set.labels),
+            inputs=[body_q, context.target_positions, context.link_indices, calibration_frame],
+            outputs=[wp.from_torch(context.local_offsets, dtype=wp.vec3)],
+            device=context.solver.device,
+        )
+        return context.local_offsets
+
+    if mode == "mean":
+        wp.launch(
+            _zero_marker_offset_accumulators,
+            dim=len(marker_set.labels),
+            outputs=[context.offset_sums, context.offset_counts],
+            device=context.solver.device,
+        )
+        wp.launch(
+            _accumulate_marker_local_offsets,
+            dim=[body_q.shape[0], len(marker_set.labels)],
+            inputs=[body_q, context.target_positions, context.valid, context.link_indices],
+            outputs=[context.offset_sums, context.offset_counts],
+            device=context.solver.device,
+        )
+        wp.launch(
+            _normalize_marker_local_offsets,
+            dim=len(marker_set.labels),
+            inputs=[context.offset_sums, context.offset_counts],
+            outputs=[wp.from_torch(context.local_offsets, dtype=wp.vec3)],
+            device=context.solver.device,
+        )
+        return context.local_offsets
+
+    if mode == "median":
+        transforms = _newton_context_body_transforms(args, marker_set)
+        if transforms is None:
+            return None
+        body_pos, body_quat_xyzw = transforms
+        local_samples = _quat_rotate_inverse_xyzw(body_quat_xyzw, marker_set.targets - body_pos)
+        offsets = torch.zeros_like(local_samples[0])
+        for marker_idx in range(len(marker_set.labels)):
+            samples = local_samples[marker_set.valid[:, marker_idx], marker_idx]
+            if samples.numel() == 0:
+                raise ValueError(f"No finite samples available while calibrating marker {marker_set.labels[marker_idx]}.")
+            offsets[marker_idx] = samples.median(dim=0).values
+        return offsets.detach().clone()
+
+    raise ValueError(f"Unsupported offset calibration mode: {mode}")
 
 
-def _predict_markers_v3d_segments(data, marker_set: MarkerSet, device: torch.device, window: int) -> torch.Tensor:
-    targets = marker_set.targets.to(device)
-    origins: list[torch.Tensor] = []
-    rotations: list[torch.Tensor] = []
-    for marker_label in marker_set.labels:
-        body_name = MARKER_BODY_MAP[marker_label]
-        prefix = BODY_SEGMENT_FRAME_MAP[body_name]
-        origin, rotation = _v3d_segment_frames(data, prefix, device)
-        origins.append(origin)
-        rotations.append(rotation)
-    origin_tensor = torch.stack(origins, dim=1)
-    rotation_tensor = torch.stack(rotations, dim=1)
-    local_samples = torch.matmul(rotation_tensor.transpose(-1, -2), (targets - origin_tensor).unsqueeze(-1)).squeeze(-1)
-    local_offsets = _sliding_mean_offsets(local_samples, marker_set.valid.to(device), window)
-    return origin_tensor + torch.matmul(rotation_tensor, local_offsets.unsqueeze(-1)).squeeze(-1)
+def _predict_markers_from_newton_context(args, marker_set: MarkerSet, local_offsets: torch.Tensor) -> torch.Tensor | None:
+    if not hasattr(args, "_newton_marker_context"):
+        return None
+    context: NewtonMarkerIKContext = args._newton_marker_context
+    if local_offsets.data_ptr() != context.local_offsets.data_ptr():
+        context.local_offsets.copy_(local_offsets.detach().to(device=context.local_offsets.device, dtype=torch.float32))
+    wp.launch(
+        _predict_markers_from_body_transforms,
+        dim=[context.solver._impl.body_q.shape[0], len(marker_set.labels)],
+        inputs=[
+            context.solver._impl.body_q,
+            context.link_indices,
+            wp.from_torch(context.local_offsets, dtype=wp.vec3),
+        ],
+        outputs=[context.marker_pred],
+        device=context.solver.device,
+    )
+    return wp.to_torch(context.marker_pred)
 
 
-def _compute_v3d_segment_rms_stats(data, marker_set: MarkerSet, device: torch.device, window: int) -> tuple[RMSStats, torch.Tensor]:
+def _compute_rms_stats_from_predictions(pred: torch.Tensor, marker_set: MarkerSet) -> RMSStats:
     with torch.no_grad():
-        pred = _predict_markers_v3d_segments(data, marker_set, device, window)
-        targets = marker_set.targets.to(device)
-        valid = marker_set.valid.to(device)
-        err_sq = ((pred - targets) ** 2).sum(dim=-1)
+        err_sq = ((pred - marker_set.targets) ** 2).sum(dim=-1)
+        valid = marker_set.valid.to(device=err_sq.device)
         err_sq = torch.where(valid, err_sq, torch.zeros_like(err_sq))
         per_marker_sq = err_sq.sum(dim=0)
         per_marker_count = valid.sum(dim=0)
@@ -527,23 +676,7 @@ def _compute_v3d_segment_rms_stats(data, marker_set: MarkerSet, device: torch.de
             for idx, label in enumerate(marker_set.labels)
         }
         overall_mm = float(torch.sqrt(err_sq.sum() / torch.clamp(valid.sum(), min=1)).item() * 1000.0)
-        return RMSStats(overall_mm=overall_mm, per_marker_mm=per_marker_mm, num_valid_samples=int(valid.sum().item())), pred
-
-
-def _quat_inverse_xyzw(quat: torch.Tensor) -> torch.Tensor:
-    result = quat.clone()
-    result[..., :3] = -result[..., :3]
-    return result / torch.sum(quat * quat, dim=-1, keepdim=True).clamp_min(1e-8)
-
-
-def _quat_mul_xyzw(lhs: torch.Tensor, rhs: torch.Tensor) -> torch.Tensor:
-    lhs_xyz = lhs[..., :3]
-    rhs_xyz = rhs[..., :3]
-    lhs_w = lhs[..., 3:4]
-    rhs_w = rhs[..., 3:4]
-    xyz = lhs_w * rhs_xyz + rhs_w * lhs_xyz + torch.cross(lhs_xyz, rhs_xyz, dim=-1)
-    w = lhs_w * rhs_w - torch.sum(lhs_xyz * rhs_xyz, dim=-1, keepdim=True)
-    return torch.cat([xyz, w], dim=-1)
+        return RMSStats(overall_mm=overall_mm, per_marker_mm=per_marker_mm, num_valid_samples=int(valid.sum().item()))
 
 
 def _qpos_wxyz_to_newton_xyzw(qpos: torch.Tensor) -> torch.Tensor:
@@ -577,14 +710,348 @@ def _build_newton_model(cfg, device: torch.device):
     return builder.finalize(device=str(device), requires_grad=True)
 
 
-def _optimize_qpos_newton(args, cfg, data, qpos_init: torch.Tensor, marker_set: MarkerSet, local_offsets: torch.Tensor) -> torch.Tensor:
+@wp.kernel
+def _batched_marker_pos_residuals(
+    body_q: wp.array2d(dtype=wp.transform),
+    target_pos: wp.array2d(dtype=wp.vec3),
+    link_indices: wp.array1d(dtype=wp.int32),
+    link_offsets: wp.array1d(dtype=wp.vec3),
+    weights: wp.array1d(dtype=wp.float32),
+    start_idx: int,
+    problem_idx_map: wp.array1d(dtype=wp.int32),
+    residuals: wp.array2d(dtype=wp.float32),
+):
+    row, marker_idx = wp.tid()
+    base = problem_idx_map[row]
+    body_tf = body_q[row, link_indices[marker_idx]]
+    ee_pos = wp.transform_point(body_tf, link_offsets[marker_idx])
+    error = target_pos[base, marker_idx] - ee_pos
+    weight = weights[marker_idx]
+    residual_idx = start_idx + marker_idx * 3
+    residuals[row, residual_idx + 0] = weight * error[0]
+    residuals[row, residual_idx + 1] = weight * error[1]
+    residuals[row, residual_idx + 2] = weight * error[2]
+
+
+@wp.kernel
+def _batched_marker_pos_jac_analytic(
+    link_indices: wp.array1d(dtype=wp.int32),
+    link_offsets: wp.array1d(dtype=wp.vec3),
+    weights: wp.array1d(dtype=wp.float32),
+    affects_dof: wp.array2d(dtype=wp.uint8),
+    body_q: wp.array2d(dtype=wp.transform),
+    joint_S_s: wp.array2d(dtype=wp.spatial_vector),
+    start_idx: int,
+    n_dofs: int,
+    jacobian: wp.array3d(dtype=wp.float32),
+):
+    problem_idx, marker_idx, dof_idx = wp.tid()
+    if affects_dof[marker_idx, dof_idx] == wp.uint8(0):
+        return
+
+    body_tf = body_q[problem_idx, link_indices[marker_idx]]
+    rot_w = wp.quat(body_tf[3], body_tf[4], body_tf[5], body_tf[6])
+    pos_w = wp.vec3(body_tf[0], body_tf[1], body_tf[2])
+    ee_pos_world = pos_w + wp.quat_rotate(rot_w, link_offsets[marker_idx])
+
+    S = joint_S_s[problem_idx, dof_idx]
+    v_orig = wp.vec3(S[0], S[1], S[2])
+    omega = wp.vec3(S[3], S[4], S[5])
+    v_ee = v_orig + wp.cross(omega, ee_pos_world)
+
+    weight = weights[marker_idx]
+    residual_idx = start_idx + marker_idx * 3
+    jacobian[problem_idx, residual_idx + 0, dof_idx] = -weight * v_ee[0]
+    jacobian[problem_idx, residual_idx + 1, dof_idx] = -weight * v_ee[1]
+    jacobian[problem_idx, residual_idx + 2, dof_idx] = -weight * v_ee[2]
+
+
+@wp.kernel
+def _zero_marker_offset_accumulators(
+    offset_sums: wp.array2d(dtype=wp.float32),
+    offset_counts: wp.array1d(dtype=wp.float32),
+):
+    marker_idx = wp.tid()
+    offset_sums[marker_idx, 0] = 0.0
+    offset_sums[marker_idx, 1] = 0.0
+    offset_sums[marker_idx, 2] = 0.0
+    offset_counts[marker_idx] = 0.0
+
+
+@wp.kernel
+def _accumulate_marker_local_offsets(
+    body_q: wp.array2d(dtype=wp.transform),
+    target_pos: wp.array2d(dtype=wp.vec3),
+    valid: wp.array2d(dtype=wp.bool),
+    link_indices: wp.array1d(dtype=wp.int32),
+    offset_sums: wp.array2d(dtype=wp.float32),
+    offset_counts: wp.array1d(dtype=wp.float32),
+):
+    frame_idx, marker_idx = wp.tid()
+    if not valid[frame_idx, marker_idx]:
+        return
+
+    body_tf = body_q[frame_idx, link_indices[marker_idx]]
+    body_pos = wp.vec3(body_tf[0], body_tf[1], body_tf[2])
+    body_rot = wp.quat(body_tf[3], body_tf[4], body_tf[5], body_tf[6])
+    local_offset = wp.quat_rotate_inv(body_rot, target_pos[frame_idx, marker_idx] - body_pos)
+
+    wp.atomic_add(offset_sums, marker_idx, 0, local_offset[0])
+    wp.atomic_add(offset_sums, marker_idx, 1, local_offset[1])
+    wp.atomic_add(offset_sums, marker_idx, 2, local_offset[2])
+    wp.atomic_add(offset_counts, marker_idx, 1.0)
+
+
+@wp.kernel
+def _normalize_marker_local_offsets(
+    offset_sums: wp.array2d(dtype=wp.float32),
+    offset_counts: wp.array1d(dtype=wp.float32),
+    local_offsets: wp.array1d(dtype=wp.vec3),
+):
+    marker_idx = wp.tid()
+    count = wp.max(offset_counts[marker_idx], 1.0)
+    local_offsets[marker_idx] = wp.vec3(
+        offset_sums[marker_idx, 0] / count,
+        offset_sums[marker_idx, 1] / count,
+        offset_sums[marker_idx, 2] / count,
+    )
+
+
+@wp.kernel
+def _set_marker_local_offsets_from_frame(
+    body_q: wp.array2d(dtype=wp.transform),
+    target_pos: wp.array2d(dtype=wp.vec3),
+    link_indices: wp.array1d(dtype=wp.int32),
+    calibration_frame: int,
+    local_offsets: wp.array1d(dtype=wp.vec3),
+):
+    marker_idx = wp.tid()
+    body_tf = body_q[calibration_frame, link_indices[marker_idx]]
+    body_pos = wp.vec3(body_tf[0], body_tf[1], body_tf[2])
+    body_rot = wp.quat(body_tf[3], body_tf[4], body_tf[5], body_tf[6])
+    local_offsets[marker_idx] = wp.quat_rotate_inv(body_rot, target_pos[calibration_frame, marker_idx] - body_pos)
+
+
+@wp.kernel
+def _predict_markers_from_body_transforms(
+    body_q: wp.array2d(dtype=wp.transform),
+    link_indices: wp.array1d(dtype=wp.int32),
+    local_offsets: wp.array1d(dtype=wp.vec3),
+    marker_pred: wp.array2d(dtype=wp.vec3),
+):
+    frame_idx, marker_idx = wp.tid()
+    body_tf = body_q[frame_idx, link_indices[marker_idx]]
+    body_pos = wp.vec3(body_tf[0], body_tf[1], body_tf[2])
+    body_rot = wp.quat(body_tf[3], body_tf[4], body_tf[5], body_tf[6])
+    marker_pred[frame_idx, marker_idx] = body_pos + wp.quat_rotate(body_rot, local_offsets[marker_idx])
+
+
+class BatchedMarkerPositionObjective(IKObjective):
+    """One Warp objective for all marker position residuals.
+
+    Newton's built-in position objective launches one residual and one analytic
+    Jacobian kernel per marker.  This objective fuses all marker work into one
+    2D/3D launch so frames, markers, and DOFs are exposed to Warp together.
+    """
+
+    def __init__(self, link_indices, link_offsets, target_positions, weights):
+        super().__init__()
+        self.link_indices = link_indices
+        self.link_offsets = link_offsets
+        self.target_positions = target_positions
+        self.weights = weights
+        self.num_markers = int(link_indices.shape[0])
+        self.affects_dof = None
+
+    def residual_dim(self):
+        return self.num_markers * 3
+
+    def supports_analytic(self):
+        return True
+
+    def init_buffers(self, model, jacobian_mode):
+        self._require_batch_layout()
+        if jacobian_mode != IKJacobianType.ANALYTIC:
+            return
+
+        joint_qd_start_np = model.joint_qd_start.numpy()
+        dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
+        for joint_idx in range(len(joint_qd_start_np) - 1):
+            dof_to_joint_np[joint_qd_start_np[joint_idx] : joint_qd_start_np[joint_idx + 1]] = joint_idx
+
+        joint_child_np = model.joint_child.numpy()
+        body_to_joint_np = np.full(model.body_count, -1, np.int32)
+        for joint_idx in range(model.joint_count):
+            child = joint_child_np[joint_idx]
+            if child != -1:
+                body_to_joint_np[child] = joint_idx
+
+        joint_q_start_np = model.joint_q_start.numpy()
+        joint_parent_np = model.joint_parent.numpy()
+        link_indices_np = self.link_indices.numpy()
+        affects_dof_np = np.zeros((self.num_markers, model.joint_dof_count), dtype=np.uint8)
+        for marker_idx, link_index in enumerate(link_indices_np):
+            ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
+            body = int(link_index)
+            while body != -1:
+                joint_idx = body_to_joint_np[body]
+                if joint_idx != -1:
+                    ancestors[joint_idx] = True
+                body = joint_parent_np[joint_idx] if joint_idx != -1 else -1
+            affects_dof_np[marker_idx] = ancestors[dof_to_joint_np]
+        self.affects_dof = wp.array(affects_dof_np, dtype=wp.uint8, device=self.device)
+
+    def compute_residuals(self, body_q, joint_q, model, residuals, start_idx, problem_idx):
+        wp.launch(
+            _batched_marker_pos_residuals,
+            dim=[body_q.shape[0], self.num_markers],
+            inputs=[
+                body_q,
+                self.target_positions,
+                self.link_indices,
+                self.link_offsets,
+                self.weights,
+                start_idx,
+                problem_idx,
+            ],
+            outputs=[residuals],
+            device=self.device,
+        )
+
+    def compute_jacobian_autodiff(self, tape, model, jacobian, start_idx, dq_dof):
+        raise NotImplementedError("BatchedMarkerPositionObjective supports analytic Jacobians only.")
+
+    def compute_jacobian_analytic(self, body_q, joint_q, model, jacobian, joint_S_s, start_idx):
+        wp.launch(
+            _batched_marker_pos_jac_analytic,
+            dim=[body_q.shape[0], self.num_markers, model.joint_dof_count],
+            inputs=[
+                self.link_indices,
+                self.link_offsets,
+                self.weights,
+                self.affects_dof,
+                body_q,
+                joint_S_s,
+                start_idx,
+                model.joint_dof_count,
+            ],
+            outputs=[jacobian],
+            device=self.device,
+        )
+
+
+def _can_use_batched_marker_objective(args) -> bool:
+    return args.newton_jacobian == "analytic"
+
+
+def _create_newton_marker_ik_context(args, cfg, qpos_init: torch.Tensor, marker_set: MarkerSet, local_offsets: torch.Tensor) -> NewtonMarkerIKContext:
     import newton.ik as ik
-    import warp as wp
+
+    device = torch.device("cpu") if args.device == "cpu" else torch.device(args.device)
+    model = _build_newton_model(cfg, device)
+    if model.joint_coord_count != qpos_init.shape[1]:
+        raise ValueError(f"Newton joint_coord_count={model.joint_coord_count}, expected qpos width {qpos_init.shape[1]}")
+
+    local_offsets_buffer = local_offsets.detach().to(device=qpos_init.device, dtype=torch.float32).contiguous().clone()
+    link_offsets_wp = wp.from_torch(local_offsets_buffer, dtype=wp.vec3)
+    targets_wp = wp.from_torch(marker_set.targets.contiguous(), dtype=wp.vec3)
+    valid_wp = wp.from_torch(marker_set.valid.contiguous(), dtype=wp.bool)
+    link_indices_torch = marker_set.body_indices.to(device=qpos_init.device, dtype=torch.int32).contiguous()
+    link_indices_wp = wp.from_torch(link_indices_torch, dtype=wp.int32)
+    weights_torch = torch.tensor(
+        [float(args.foot_marker_weight if label in FOOT_MARKERS else args.marker_weight) for label in marker_set.labels],
+        device=qpos_init.device,
+        dtype=torch.float32,
+    )
+    weights_wp = wp.from_torch(weights_torch, dtype=wp.float32)
+    objective = BatchedMarkerPositionObjective(link_indices_wp, link_offsets_wp, targets_wp, weights_wp)
+    solver = ik.IKSolver(
+        model,
+        qpos_init.shape[0],
+        [objective],
+        optimizer=args.newton_optimizer,
+        jacobian_mode=args.newton_jacobian,
+        lambda_initial=args.newton_lambda,
+    )
+    joint_q_out = wp.empty((qpos_init.shape[0], qpos_init.shape[1]), dtype=wp.float32, device=str(device))
+    offset_sums = wp.zeros((len(marker_set.labels), 3), dtype=wp.float32, device=str(device))
+    offset_counts = wp.zeros(len(marker_set.labels), dtype=wp.float32, device=str(device))
+    marker_pred = wp.empty((qpos_init.shape[0], len(marker_set.labels)), dtype=wp.vec3, device=str(device))
+    return NewtonMarkerIKContext(
+        solver=solver,
+        joint_q_out=joint_q_out,
+        local_offsets=local_offsets_buffer,
+        target_positions=targets_wp,
+        valid=valid_wp,
+        link_indices=link_indices_wp,
+        offset_sums=offset_sums,
+        offset_counts=offset_counts,
+        marker_pred=marker_pred,
+        device=device,
+    )
+
+
+def _optimize_qpos_newton(
+    args,
+    cfg,
+    qpos_init: torch.Tensor,
+    marker_set: MarkerSet,
+    local_offsets: torch.Tensor,
+    use_context_output_as_input: bool = False,
+    return_qpos: bool = True,
+) -> torch.Tensor | None:
+    import newton.ik as ik
 
     if args.device == "cpu":
         device = torch.device("cpu")
     else:
         device = torch.device(args.device)
+
+    if _can_use_batched_marker_objective(args):
+        if not hasattr(args, "_newton_marker_context"):
+            args._newton_marker_context = _create_newton_marker_ik_context(args, cfg, qpos_init, marker_set, local_offsets)
+            args._newton_objective_mode = "batched_marker"
+        context: NewtonMarkerIKContext = args._newton_marker_context
+        if local_offsets.data_ptr() != context.local_offsets.data_ptr():
+            context.local_offsets.copy_(local_offsets.detach().to(device=qpos_init.device, dtype=torch.float32))
+        if use_context_output_as_input:
+            joint_q = context.joint_q_out
+        else:
+            joint_q_torch = _qpos_wxyz_to_newton_xyzw(qpos_init).contiguous()
+            joint_q = wp.from_torch(joint_q_torch, dtype=wp.float32, requires_grad=False)
+
+        if context.device.type == "cuda":
+            torch.cuda.synchronize(context.device)
+        start_time = time.perf_counter()
+        context.solver.step(joint_q, context.joint_q_out, iterations=args.newton_iterations, step_size=args.newton_step_size)
+        if context.device.type == "cuda":
+            torch.cuda.synchronize(context.device)
+        elapsed = time.perf_counter() - start_time
+        sps = qpos_init.shape[0] * args.newton_iterations / max(elapsed, 1e-12)
+        fps_equiv = qpos_init.shape[0] / max(elapsed, 1e-12)
+        print(
+            f"Newton IK timing: elapsed={elapsed:.3f}s frames={qpos_init.shape[0]} "
+            f"iterations={args.newton_iterations} sps={sps:,.0f} frame_sps={fps_equiv:,.0f} mode=batched_marker"
+        )
+        timing = {
+            "elapsed_seconds": elapsed,
+            "sample_iterations_per_second": sps,
+            "frames_per_second": fps_equiv,
+            "timed_iterations": args.newton_iterations,
+            "objective_mode": "batched_marker",
+        }
+        args._timing = timing
+        if not hasattr(args, "_timing_history"):
+            args._timing_history = []
+        args._timing_history.append(timing)
+
+        if not return_qpos:
+            return None
+
+        joint_q_result = wp.to_torch(context.joint_q_out).detach().clone().to(device=qpos_init.device)
+        qpos = _newton_xyzw_to_qpos_wxyz(joint_q_result)
+        qpos[:, 3:7] /= torch.linalg.norm(qpos[:, 3:7], dim=-1, keepdim=True).clamp_min(1e-8)
+        return qpos
 
     model = _build_newton_model(cfg, device)
     if model.joint_coord_count != qpos_init.shape[1]:
@@ -598,10 +1065,10 @@ def _optimize_qpos_newton(args, cfg, data, qpos_init: torch.Tensor, marker_set: 
     target_cpu = marker_set.targets.detach().cpu().numpy().astype(np.float32)
     offsets_cpu = local_offsets.detach().cpu().numpy().astype(np.float32)
     body_indices_cpu = marker_set.body_indices.detach().cpu().numpy().astype(np.int32)
-    weight = float(args.marker_weight)
     for marker_idx, label in enumerate(marker_set.labels):
         targets = wp.array(target_cpu[:, marker_idx], dtype=wp.vec3, device=str(device))
         offset = wp.vec3(*offsets_cpu[marker_idx].tolist())
+        weight = float(args.foot_marker_weight if label in FOOT_MARKERS else args.marker_weight)
         objectives.append(
             ik.IKObjectivePosition(
                 link_index=int(body_indices_cpu[marker_idx]),
@@ -610,37 +1077,6 @@ def _optimize_qpos_newton(args, cfg, data, qpos_init: torch.Tensor, marker_set: 
                 weight=weight,
             )
         )
-
-    body_index = {name: idx for idx, name in enumerate(cfg.kinematic_info.body_names)}
-    segment_bodies = [body for body in BODY_SEGMENT_FRAME_MAP if body in body_index]
-    if args.segment_origin_weight > 0.0 or args.segment_rotation_weight > 0.0:
-        root_pos, joint_rot_mats = extract_transforms_from_qpos(cfg.kinematic_info, qpos_init)
-        _, initial_body_rot = compute_forward_kinematics_from_transforms(cfg.kinematic_info, root_pos, joint_rot_mats)
-
-    for body_name in segment_bodies:
-        body_idx = body_index[body_name]
-        origin, rotation = _v3d_segment_frames(data, BODY_SEGMENT_FRAME_MAP[body_name], qpos_init.device)
-        if args.segment_origin_weight > 0.0:
-            objectives.append(
-                ik.IKObjectivePosition(
-                    link_index=body_idx,
-                    link_offset=wp.vec3(0.0, 0.0, 0.0),
-                    target_positions=wp.array(origin.detach().cpu().numpy().astype(np.float32), dtype=wp.vec3, device=str(device)),
-                    weight=float(args.segment_origin_weight),
-                )
-            )
-        if args.segment_rotation_weight > 0.0:
-            target_rot_xyzw = matrix_to_quaternion(rotation, w_last=True)
-            initial_rot_xyzw = matrix_to_quaternion(initial_body_rot[:, body_idx], w_last=True)
-            offset_xyzw = _quat_mul_xyzw(_quat_inverse_xyzw(initial_rot_xyzw[args.calibration_frame]), target_rot_xyzw[args.calibration_frame])
-            objectives.append(
-                ik.IKObjectiveRotation(
-                    link_index=body_idx,
-                    link_offset_rotation=wp.quat(*offset_xyzw.detach().cpu().numpy().astype(np.float32).tolist()),
-                    target_rotations=wp.array(target_rot_xyzw.detach().cpu().numpy().astype(np.float32), dtype=wp.vec4, device=str(device)),
-                    weight=float(args.segment_rotation_weight),
-                )
-            )
 
     solver = ik.IKSolver(
         model,
@@ -691,24 +1127,102 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         "markers": marker_set.labels,
         "per_marker_rms_mm": stats.per_marker_mm,
         "backend": args.backend,
+        "newton_objective_mode": getattr(args, "_newton_objective_mode", "per_marker"),
         "newton_iterations": args.newton_iterations,
         "newton_optimizer": args.newton_optimizer,
         "newton_jacobian": args.newton_jacobian,
         "chunk_size": args.chunk_size,
         "offset_calibration": args.offset_calibration,
         "offset_refine_passes": args.offset_refine_passes,
-        "marker_offset_source": args.marker_offset_source,
         "root_orientation": args.root_orientation,
-        "segment_origin_weight": args.segment_origin_weight,
-        "segment_rotation_weight": args.segment_rotation_weight,
+        "marker_weight": args.marker_weight,
+        "foot_marker_weight": args.foot_marker_weight,
     }
+    if hasattr(args, "_treadmill_mapping"):
+        report["treadmill_mapping"] = args._treadmill_mapping
     if hasattr(args, "_timing"):
         report["timing"] = args._timing
     if hasattr(args, "_timing_history"):
         report["timing_history"] = args._timing_history
         report["total_ik_elapsed_seconds"] = sum(item["elapsed_seconds"] for item in args._timing_history)
+    if hasattr(args, "_joint_angle_plot_paths"):
+        report["joint_angle_plots"] = [str(path) for path in args._joint_angle_plot_paths]
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
+
+
+def _default_joint_angle_plot_dir(output_path: Path) -> Path:
+    if output_path.parent.name == "proto":
+        return output_path.parent.parent / "plots"
+    return output_path.parent / "plots"
+
+
+def _write_joint_angle_plots(
+    output_dir: Path,
+    output_stem: str,
+    dof_names: list[str],
+    initial_dof_pos: torch.Tensor,
+    solved_dof_pos: torch.Tensor,
+    fps: int,
+) -> list[Path]:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError("matplotlib is required for joint-angle plots. Install with `pip install matplotlib`.") from exc
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    initial_deg = torch.rad2deg(initial_dof_pos.detach().cpu()).numpy()
+    solved_deg = torch.rad2deg(solved_dof_pos.detach().cpu()).numpy()
+    time_s = np.arange(solved_deg.shape[0], dtype=np.float32) / float(fps)
+    paths: list[Path] = []
+
+    overview_path = output_dir / f"{output_stem}_joint_angles_overview.png"
+    fig, ax = plt.subplots(figsize=(16, 8), constrained_layout=True)
+    for dof_idx, name in enumerate(dof_names):
+        ax.plot(time_s, solved_deg[:, dof_idx], label=name, linewidth=0.8, alpha=0.85)
+    ax.set_title("Solved joint angles")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Angle (deg)")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize="x-small", ncols=1)
+    fig.savefig(overview_path, dpi=160)
+    plt.close(fig)
+    paths.append(overview_path)
+
+    comparison_path = output_dir / f"{output_stem}_joint_angles.pdf"
+    with PdfPages(comparison_path) as pdf:
+        for dof_idx, name in enumerate(dof_names):
+            fig, axes = plt.subplots(3, 1, figsize=(12, 9), sharex=True, constrained_layout=True)
+            axes[0].plot(time_s, initial_deg[:, dof_idx], label="warm start", color="tab:orange", linewidth=1.0)
+            axes[0].set_title("Warm-start angle")
+            axes[0].set_ylabel("deg")
+            axes[0].grid(True, alpha=0.25)
+            axes[0].legend(loc="upper right", fontsize="small")
+
+            axes[1].plot(time_s, solved_deg[:, dof_idx], label="solved", color="tab:blue", linewidth=1.0)
+            axes[1].set_title("Solved angle")
+            axes[1].set_ylabel("deg")
+            axes[1].grid(True, alpha=0.25)
+            axes[1].legend(loc="upper right", fontsize="small")
+
+            delta_deg = solved_deg[:, dof_idx] - initial_deg[:, dof_idx]
+            axes[2].plot(time_s, delta_deg, label="solved - warm start", color="tab:green", linewidth=1.0)
+            axes[2].set_title("IK correction")
+            axes[2].set_xlabel("Time (s)")
+            axes[2].set_ylabel("deg")
+            axes[2].grid(True, alpha=0.25)
+            axes[2].legend(loc="upper right", fontsize="small")
+
+            fig.suptitle(f"Joint angle: {name} ({output_stem})", fontsize=13)
+            pdf.savefig(fig)
+            plt.close(fig)
+    paths.append(comparison_path)
+
+    return paths
 
 
 def _write_rerun_recording(output_path: Path, motion, ki, marker_set: MarkerSet, marker_pred: torch.Tensor | None, marker_targets: torch.Tensor) -> None:
@@ -744,36 +1258,55 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
     data, output_fps = _load_window(args.c3d, args.start_frame, args.end_frame, args.output_fps, args.max_frames)
+    _apply_treadmill_overground_if_requested(data, output_fps, args)
     cfg = robot_config(args.robot_name)
     ki = cfg.kinematic_info
 
     qpos_init = _initial_qpos(data, ki, device, args.root_orientation, args.warmstart_angle_mode, args.warmstart_clamp_limits)
     marker_set = _build_marker_set(data, ki.body_names, device)
-    if args.marker_offset_source == "qpos":
-        local_offsets = _calibrate_local_offsets(ki, qpos_init, marker_set, args.calibration_frame, args.offset_calibration)
-    elif args.marker_offset_source == "v3d-segment":
-        local_offsets = _calibrate_local_offsets_from_v3d_segments(
-            data,
-            ki,
-            qpos_init,
-            marker_set,
-            args.calibration_frame,
-            args.offset_calibration,
-        )
-    else:
-        raise ValueError(f"Unsupported marker offset source: {args.marker_offset_source}")
+    local_offsets = _calibrate_local_offsets(ki, qpos_init, marker_set, args.calibration_frame, args.offset_calibration)
     print(
         f"Optimizing {qpos_init.shape[0]} frames at {output_fps} fps on {device} with {args.backend}; "
         f"nq={qpos_init.shape[1]} bodies={ki.num_bodies} markers={len(marker_set.labels)}"
     )
 
-    marker_pred_for_rerun = None
-    qpos = _optimize_qpos_newton(args, cfg, data, qpos_init, marker_set, local_offsets)
-    for refine_pass in range(max(0, args.offset_refine_passes)):
-        local_offsets = _calibrate_local_offsets(ki, qpos, marker_set, args.calibration_frame, args.offset_calibration)
+    num_refine_passes = max(0, args.offset_refine_passes)
+    use_cached_context = _can_use_batched_marker_objective(args)
+    qpos = _optimize_qpos_newton(
+        args,
+        cfg,
+        qpos_init,
+        marker_set,
+        local_offsets,
+        return_qpos=not use_cached_context or num_refine_passes == 0,
+    )
+    for refine_pass in range(num_refine_passes):
+        context_offsets = _calibrate_local_offsets_from_newton_context(args, marker_set, args.calibration_frame, args.offset_calibration)
+        if context_offsets is None:
+            if qpos is None:
+                raise RuntimeError("qpos is required for fallback offset calibration.")
+            local_offsets = _calibrate_local_offsets(ki, qpos, marker_set, args.calibration_frame, args.offset_calibration)
+            use_context_output_as_input = False
+        else:
+            local_offsets = context_offsets
+            use_context_output_as_input = True
         print(f"Refining marker offsets from solved qpos: pass {refine_pass + 1}/{args.offset_refine_passes}")
-        qpos = _optimize_qpos_newton(args, cfg, data, qpos, marker_set, local_offsets)
-    stats = _compute_rms_stats(ki, qpos, marker_set, local_offsets, max(1, args.chunk_size))
+        qpos = _optimize_qpos_newton(
+            args,
+            cfg,
+            qpos if qpos is not None else qpos_init,
+            marker_set,
+            local_offsets,
+            use_context_output_as_input=use_context_output_as_input,
+            return_qpos=not use_context_output_as_input or refine_pass == num_refine_passes - 1,
+        )
+    marker_pred_for_rerun = _predict_markers_from_newton_context(args, marker_set, local_offsets)
+    if marker_pred_for_rerun is None:
+        stats = _compute_rms_stats(ki, qpos, marker_set, local_offsets, max(1, args.chunk_size))
+        marker_pred_for_rerun = _predict_markers(ki, qpos, marker_set, local_offsets).detach()
+    else:
+        marker_pred_for_rerun = marker_pred_for_rerun.detach()
+        stats = _compute_rms_stats_from_predictions(marker_pred_for_rerun, marker_set)
     print(f"Final marker RMS: {stats.overall_mm:.3f} mm over {stats.num_valid_samples} marker samples")
     for label, rms_mm in sorted(stats.per_marker_mm.items()):
         print(f"  {label:>10s}: {rms_mm:8.3f} mm")
@@ -793,16 +1326,44 @@ def main() -> None:
     motion.rigid_body_contacts = extract_contacts(data, cfg, args.force_threshold)
     motion.local_rigid_body_rot = None
     motion.state_conversion = StateConversion.COMMON
-    motion.fix_height_per_frame(height_offset=args.height_offset)
+    height_translation = motion.fix_height_per_frame(height_offset=args.height_offset)
+    marker_targets_for_rerun = marker_set.targets + height_translation[:, None]
+    marker_pred_for_rerun = marker_pred_for_rerun + height_translation[:, None]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(motion.to_dict(), args.output)
+    motion_dict = motion.to_dict()
+    motion_dict["marker_targets"] = marker_targets_for_rerun.detach().cpu()
+    motion_dict["marker_reconstructed"] = marker_pred_for_rerun.detach().cpu()
+    motion_dict["marker_labels"] = marker_set.labels
+    if hasattr(args, "_treadmill_mapping"):
+        motion_dict["treadmill_mapping"] = args._treadmill_mapping
+    torch.save(motion_dict, args.output)
+    if not args.no_joint_angle_plots:
+        plot_dir = args.joint_angle_plot_dir or _default_joint_angle_plot_dir(args.output)
+        args._joint_angle_plot_paths = _write_joint_angle_plots(
+            plot_dir,
+            args.output.stem,
+            ki.dof_names,
+            qpos_init[:, 7:],
+            dof_pos,
+            output_fps,
+        )
+        print("Wrote joint-angle plots:")
+        for plot_path in args._joint_angle_plot_paths:
+            print(f"  {plot_path}")
     report_path = args.report or args.output.with_suffix(".rms.json")
     _write_report(report_path, args, stats, marker_set)
     print(f"Wrote motion: {args.output}")
     print(f"Wrote RMS report: {report_path}")
     if args.rerun_output is not None:
-        _write_rerun_recording(args.rerun_output, motion, ki, marker_set, marker_pred_for_rerun, marker_set.targets)
+        _write_rerun_recording(
+            args.rerun_output,
+            motion,
+            ki,
+            marker_set,
+            marker_pred_for_rerun,
+            marker_targets_for_rerun,
+        )
 
 
 if __name__ == "__main__":

@@ -78,6 +78,23 @@ BODY_SCALE_GROUPS = {
 }
 
 
+# Bodies whose attached geometry (skin capsules, muscle wrap surfaces) and
+# muscle sites represent each scaled segment.  BODY_SCALE_GROUPS only moves the
+# child joint offsets (segment lengths); without also scaling the geometry on
+# the segment body the visual / collision shapes keep their original size and
+# leave a visible gap between segments (most notably between the shank capsule
+# and the foot when the shank is lengthened).  Each body's geometry is scaled
+# about the body origin so it tracks the new joint locations.
+GEOM_SCALE_GROUPS = {
+    "thigh_r": ["femur_r"],
+    "thigh_l": ["femur_l"],
+    "shank_r": ["tibia_r"],
+    "shank_l": ["tibia_l"],
+    "foot_r": ["talus_r", "calcn_r", "toes_r"],
+    "foot_l": ["talus_l", "calcn_l", "toes_l"],
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("c3d", type=Path, help="Subject C3D file with an initial static pose window.")
@@ -294,6 +311,44 @@ def apply_scales(root: ET.Element, scales: dict[str, float]) -> dict[str, dict[s
     return changed
 
 
+def _scale_attr(elem: ET.Element, attr: str, scale: float) -> bool:
+    text = elem.get(attr)
+    if text is None or not text.strip():
+        return False
+    elem.set(attr, _format_vec(_parse_vec(text) * scale))
+    return True
+
+
+def apply_geometry_scales(root: ET.Element, scales: dict[str, float]) -> dict[str, dict[str, float]]:
+    """Scale each segment body's own geoms and sites about the body origin.
+
+    Only the body's direct ``geom``/``site`` children are scaled (not those of
+    nested child bodies), so each segment is scaled by exactly its own factor.
+    Geom ``pos``/``size``/``fromto`` and site ``pos`` are multiplied by the
+    segment scale, lengthening the skin capsules and wrap surfaces to match the
+    new joint offsets produced by ``apply_scales``.
+    """
+    bodies = _body_by_name(root)
+    changed: dict[str, dict[str, float]] = {}
+    for scale_name, body_names in GEOM_SCALE_GROUPS.items():
+        scale = scales.get(scale_name, 1.0)
+        if not np.isfinite(scale) or scale <= 0 or abs(scale - 1.0) < 1e-9:
+            continue
+        for body_name in body_names:
+            body = bodies.get(body_name)
+            if body is None:
+                continue
+            count = 0
+            for geom in body.findall("geom"):
+                count += _scale_attr(geom, "pos", scale)
+                count += _scale_attr(geom, "size", scale)
+                count += _scale_attr(geom, "fromto", scale)
+            for site in body.findall("site"):
+                count += _scale_attr(site, "pos", scale)
+            changed[body_name] = {"scale": float(scale), "scaled_attrs": int(count)}
+    return changed
+
+
 def maybe_copy_asset_dir(base_xml: Path, output_xml: Path, copy_base_asset_dir: bool) -> None:
     if not copy_base_asset_dir:
         output_xml.parent.mkdir(parents=True, exist_ok=True)
@@ -326,6 +381,7 @@ def main() -> None:
         if base_length > 0 and np.isfinite(subject_lengths.get(name, math.nan))
     }
     changed = apply_scales(root, scales)
+    geom_changed = apply_geometry_scales(root, scales)
 
     maybe_copy_asset_dir(args.base_xml, args.output_xml, args.copy_base_asset_dir)
     tree.write(args.output_xml, encoding="utf-8", xml_declaration=False)
@@ -339,8 +395,10 @@ def main() -> None:
         "base_lengths_m": base_lengths,
         "scales": scales,
         "changed_bodies": changed,
+        "changed_geometry": geom_changed,
         "notes": [
             "Kinematic body offsets were scaled; masses/inertias were intentionally left unchanged.",
+            "Segment geometry (skin capsules, wrap surfaces, muscle sites) was scaled about each body origin to track the new joint offsets.",
             "Hip centers use the Visual3D/CODA pelvis formulas from the MDH file.",
         ],
     }

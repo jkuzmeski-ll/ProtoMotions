@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 from dataclasses import dataclass, field
+from typing import Dict, List
 
 from protomotions.robot_configs.base import RobotAssetConfig
 from protomotions.robot_configs.ms_human_lower import MSHumanLowerRobotConfig
@@ -30,9 +31,34 @@ class MSHumanLowerS003RobotConfig(MSHumanLowerRobotConfig):
 
     default_root_height: float = 1.0
 
+    common_naming_to_robot_body_names: Dict[str, List[str]] = field(
+        default_factory=lambda: {
+            "all_left_foot_bodies": ["talus_l", "calcn_l", "toes_l"],
+            "all_right_foot_bodies": ["talus_r", "calcn_r", "toes_r"],
+            "all_left_hand_bodies": [],
+            "all_right_hand_bodies": [],
+            "head_body_name": [],
+            "torso_body_name": [],
+        }
+    )
+
+    trackable_bodies_subset: List[str] = field(
+        default_factory=lambda: [
+            "pelvis",
+            "femur_l",
+            "tibia_l",
+            "calcn_l",
+            "toes_l",
+            "femur_r",
+            "tibia_r",
+            "calcn_r",
+            "toes_r",
+        ]
+    )
+
     asset: RobotAssetConfig = field(
         default_factory=lambda: RobotAssetConfig(
-            asset_file_name="mjcf/ms_human_700/MS-Human-700-Locomotion-S003.xml",
+            asset_file_name="mjcf/ms_human_700/MS-Human-700-Locomotion-S003-LowerOnly.xml",
             usd_asset_file_name=None,
         )
     )

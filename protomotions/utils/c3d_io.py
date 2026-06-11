@@ -78,6 +78,15 @@ class C3DMetadata:
     parameters: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class C3DEvent:
+    label: str
+    time_seconds: float
+    frame: int
+    context: str = ""
+    description: str = ""
+
+
 def read_header(path: str | Path) -> C3DHeader:
     """Read the 512-byte C3D header."""
     with open(path, "rb") as f:
@@ -341,6 +350,54 @@ def marker_index(labels: list[str], name: str) -> int:
         if label == name or label.endswith(suffix):
             return idx
     raise KeyError(f"Marker {name!r} not found in C3D labels")
+
+
+def events_from_metadata(metadata: C3DMetadata) -> list[C3DEvent]:
+    """Return C3D events from EVENT.LABELS/TIMES parameter chunks.
+
+    Vicon/Visual3D files can split large event tables across suffixed
+    parameters (``LABELS2``, ``TIMES2``, ...).  Event times are stored as
+    minutes/seconds and converted to absolute 1-based C3D frame numbers.
+    """
+    events: list[C3DEvent] = []
+    suffixes = [""]
+    suffixes.extend(
+        str(idx) for idx in range(2, 100) if f"EVENT.LABELS{idx}" in metadata.parameters
+    )
+    for suffix in suffixes:
+        labels = metadata.parameters.get(f"EVENT.LABELS{suffix}", [])
+        times = metadata.parameters.get(f"EVENT.TIMES{suffix}")
+        contexts = metadata.parameters.get(f"EVENT.CONTEXTS{suffix}", [])
+        descriptions = metadata.parameters.get(f"EVENT.DESCRIPTIONS{suffix}", [])
+        if isinstance(labels, str):
+            labels = [labels]
+        if times is None:
+            continue
+        for idx, raw_label in enumerate(labels):
+            label = str(raw_label).strip()
+            if not label or idx >= times.shape[1]:
+                continue
+            time_seconds = float(times[0, idx]) * 60.0 + float(times[1, idx])
+            if time_seconds < 0.0:
+                continue
+            frame = int(round(time_seconds * metadata.header.point_rate)) + metadata.header.first_frame
+            context = str(contexts[idx]).strip() if idx < len(contexts) else ""
+            description = str(descriptions[idx]).strip() if idx < len(descriptions) else ""
+            events.append(
+                C3DEvent(
+                    label=label,
+                    time_seconds=time_seconds,
+                    frame=frame,
+                    context=context,
+                    description=description,
+                )
+            )
+    return sorted(events, key=lambda event: (event.time_seconds, event.label))
+
+
+def read_events(path: str | Path) -> list[C3DEvent]:
+    """Read C3D events without loading marker trajectories."""
+    return events_from_metadata(read_metadata(path))
 
 
 def markers_by_name(data: C3DData, names: list[str]) -> dict[str, np.ndarray]:
