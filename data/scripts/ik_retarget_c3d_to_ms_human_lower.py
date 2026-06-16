@@ -231,6 +231,15 @@ def parse_args() -> argparse.Namespace:
         help="MJCF marker site prefix. With the default, RHEE first looks for site name 'mocap_RHEE', then 'RHEE'.",
     )
     parser.add_argument(
+        "--export-marker-sites-mjcf",
+        type=Path,
+        default=None,
+        help=(
+            "Optional MJCF output path for final calibrated marker offsets. The robot asset XML is used as the "
+            "template, and final local offsets are written as <site> elements named with --marker-site-prefix."
+        ),
+    )
+    parser.add_argument(
         "--offset-refine-passes",
         type=int,
         default=0,
@@ -442,6 +451,65 @@ def _load_marker_sites(cfg, site_prefix: str) -> dict[str, MarkerSite]:
                 local_offset=_parse_site_pos(site),
             )
     return marker_sites
+
+
+def _format_site_pos(pos: torch.Tensor) -> str:
+    values = pos.detach().cpu().tolist()
+    return " ".join(f"{float(value):.9g}" for value in values)
+
+
+def _xml_body_elements(root: ET.Element) -> dict[str, ET.Element]:
+    return {body.get("name"): body for body in root.iter("body") if body.get("name")}
+
+
+def _remove_site_by_name(root: ET.Element, site_name: str) -> None:
+    for body in root.iter("body"):
+        for child in list(body):
+            if child.tag == "site" and child.get("name") == site_name:
+                body.remove(child)
+
+
+def _write_marker_sites_mjcf(
+    template_xml: Path,
+    output_xml: Path,
+    ki,
+    marker_set: MarkerSet,
+    local_offsets: torch.Tensor,
+    site_prefix: str,
+) -> None:
+    tree = ET.parse(template_xml)
+    root = tree.getroot()
+    bodies = _xml_body_elements(root)
+
+    written: list[str] = []
+    for marker_idx, label in enumerate(marker_set.labels):
+        body_name = ki.body_names[int(marker_set.body_indices[marker_idx].detach().cpu().item())]
+        body = bodies.get(body_name)
+        if body is None:
+            raise ValueError(f"Cannot export marker {label!r}: body {body_name!r} is missing from {template_xml}")
+        site_name = f"{site_prefix}{label}" if site_prefix else label
+        _remove_site_by_name(root, site_name)
+        ET.SubElement(
+            body,
+            "site",
+            {
+                "name": site_name,
+                "type": "sphere",
+                "group": "0",
+                "size": "0.008",
+                "rgba": "0.1 0.45 1 1",
+                "pos": _format_site_pos(local_offsets[marker_idx]),
+            },
+        )
+        written.append(f"{site_name}->{body_name}")
+
+    ET.indent(tree, space="  ")
+    output_xml.parent.mkdir(parents=True, exist_ok=True)
+    tree.write(output_xml, encoding="unicode", xml_declaration=False)
+    output_xml.write_text(output_xml.read_text() + "\n")
+    print(f"Wrote {len(written)} calibrated marker sites to {output_xml}")
+    for item in written:
+        print(f"  {item}")
 
 
 def _build_marker_set(
@@ -1517,6 +1585,15 @@ def main() -> None:
     _write_report(report_path, args, stats, marker_set)
     print(f"Wrote motion: {args.output}")
     print(f"Wrote RMS report: {report_path}")
+    if args.export_marker_sites_mjcf is not None:
+        _write_marker_sites_mjcf(
+            _asset_xml_path(cfg),
+            args.export_marker_sites_mjcf,
+            ki,
+            marker_set,
+            local_offsets,
+            args.marker_site_prefix,
+        )
     if args.rerun_output is not None:
         _write_rerun_recording(
             args.rerun_output,

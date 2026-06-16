@@ -24,7 +24,10 @@ Hotkeys:
     y / b       Move selected site along local +Y / -Y
     z / c       Move selected site along local +Z / -Z
     = / -       Increase / decrease edit step
+    m           Mirror selected R/L marker to its pair by flipping local Z
+    n / p       Save pending edits before marker switch when --save-on-switch is set
     s           Save selected marker positions back to XML
+    --autosave  Save positions after every edit, so viewer crashes do not lose work
     h           Print help
 
 Example:
@@ -66,8 +69,36 @@ def parse_args() -> argparse.Namespace:
         default="mocap_",
         help="Only sites whose names start with this prefix are editable.",
     )
+    parser.add_argument(
+        "--site-name-regex",
+        help="Optional regex applied after --site-prefix filtering, e.g. 'mocap_[RL](THI|TIB)$'.",
+    )
+    parser.add_argument(
+        "--tracking-markers-only",
+        action="store_true",
+        help="Only edit rigid-segment tracking markers: mocap_RTHI, mocap_LTHI, mocap_RTIB, mocap_LTIB.",
+    )
     parser.add_argument("--step", type=float, default=0.005, help="Initial local-position edit step in meters.")
     parser.add_argument("--site-size", type=float, default=0.008, help="Unselected marker sphere radius in meters.")
+    parser.add_argument(
+        "--start-site",
+        help="Optional site name to select first, e.g. mocap_RASI.",
+    )
+    parser.add_argument(
+        "--mirror-on-edit",
+        action="store_true",
+        help="After every movement, update the paired R/L marker by copying local X/Y and flipping local Z.",
+    )
+    parser.add_argument(
+        "--save-on-switch",
+        action="store_true",
+        help="Save pending marker positions when changing selected marker. More responsive than --autosave.",
+    )
+    parser.add_argument(
+        "--autosave",
+        action="store_true",
+        help="Write MJCF site positions after every edit. Useful because MuJoCo's passive viewer can segfault on close/input.",
+    )
     return parser.parse_args()
 
 
@@ -80,11 +111,12 @@ def _body_name(model: mujoco.MjModel, site_id: int) -> str:
     return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
 
 
-def _find_editable_sites(model: mujoco.MjModel, site_prefix: str) -> list[int]:
+def _find_editable_sites(model: mujoco.MjModel, site_prefix: str, site_name_regex: str | None) -> list[int]:
+    site_pattern = re.compile(site_name_regex) if site_name_regex else None
     site_ids = []
     for site_id in range(model.nsite):
         site_name = _site_name(model, site_id)
-        if site_name and site_name.startswith(site_prefix):
+        if site_name and site_name.startswith(site_prefix) and (site_pattern is None or site_pattern.search(site_name)):
             site_ids.append(site_id)
     return site_ids
 
@@ -97,6 +129,7 @@ def _print_help() -> None:
         "  y / b  : local +Y / -Y\n"
         "  z / c  : local +Z / -Z\n"
         "  = / -  : increase / decrease step\n"
+        "  m      : mirror selected R/L marker to its pair by flipping local Z\n"
         "  s      : save MJCF site positions\n"
         "  h      : print this help\n"
     )
@@ -128,6 +161,42 @@ def _format_pos(pos: np.ndarray) -> str:
     return f"{pos[0]:.9g} {pos[1]:.9g} {pos[2]:.9g}"
 
 
+def _paired_site_name(site_name: str) -> str | None:
+    if "RIGHT" in site_name:
+        return site_name.replace("RIGHT", "LEFT", 1)
+    if "LEFT" in site_name:
+        return site_name.replace("LEFT", "RIGHT", 1)
+
+    marker_name = site_name.rsplit("_", 1)[-1]
+    marker_start = len(site_name) - len(marker_name)
+    if marker_name.startswith("R") and len(marker_name) > 1:
+        return site_name[:marker_start] + "L" + marker_name[1:]
+    if marker_name.startswith("L") and len(marker_name) > 1:
+        return site_name[:marker_start] + "R" + marker_name[1:]
+    return None
+
+
+def _site_id_by_name(model: mujoco.MjModel, site_name: str) -> int | None:
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+    return int(site_id) if site_id >= 0 else None
+
+
+def _mirror_site_to_pair(model: mujoco.MjModel, site_id: int) -> bool:
+    site_name = _site_name(model, site_id)
+    paired_name = _paired_site_name(site_name)
+    if paired_name is None:
+        print(f"No R/L paired marker name inferred for {site_name}")
+        return False
+    paired_site_id = _site_id_by_name(model, paired_name)
+    if paired_site_id is None:
+        print(f"Paired marker site {paired_name} not found for {site_name}")
+        return False
+    model.site_pos[paired_site_id] = model.site_pos[site_id]
+    model.site_pos[paired_site_id, 2] *= -1.0
+    print(f"Mirrored {site_name} -> {paired_name}: pos={_format_pos(model.site_pos[paired_site_id])}")
+    return True
+
+
 def _replace_site_pos(xml_text: str, site_name: str, new_pos: str) -> tuple[str, bool]:
     pattern = re.compile(r'(<site\b(?=[^>]*\bname="' + re.escape(site_name) + r'")[^>]*\bpos=")([^"]*)(")')
     xml_text, count = pattern.subn(r"\g<1>" + new_pos + r"\3", xml_text, count=1)
@@ -148,18 +217,39 @@ def _save_site_positions(xml_path: Path, model: mujoco.MjModel, site_ids: list[i
     print(f"Saved {len(site_ids)} marker site positions to {xml_path}")
 
 
+def _autosave_site_positions(xml_path: Path, model: mujoco.MjModel, site_ids: list[int], state: SiteEditorState) -> None:
+    _save_site_positions(xml_path, model, site_ids)
+    state.dirty = False
+
+
 def main() -> None:
     args = parse_args()
+    site_name_regex = args.site_name_regex
+    if args.tracking_markers_only:
+        tracking_regex = rf"^{re.escape(args.site_prefix)}[RL](THI|TIB)$"
+        if site_name_regex is not None and site_name_regex != tracking_regex:
+            raise ValueError("Use either --tracking-markers-only or --site-name-regex, not both.")
+        site_name_regex = tracking_regex
     model = mujoco.MjModel.from_xml_path(str(args.mjcf))
     data = mujoco.MjData(model)
-    site_ids = _find_editable_sites(model, args.site_prefix)
+    site_ids = _find_editable_sites(model, args.site_prefix, site_name_regex)
     if not site_ids:
         raise ValueError(f"No editable sites found with prefix '{args.site_prefix}' in {args.mjcf}")
 
     state = SiteEditorState(site_ids=site_ids, selected_idx=0, step=float(args.step))
+    if args.start_site:
+        start_site_id = _site_id_by_name(model, args.start_site)
+        if start_site_id is None or start_site_id not in site_ids:
+            raise ValueError(f"Start site {args.start_site!r} is not an editable site in {args.mjcf}")
+        state.selected_idx = site_ids.index(start_site_id)
     _highlight_sites(model, state, args.site_size)
     _print_help()
     _print_selected(model, state)
+
+    def save_if_needed() -> None:
+        if state.dirty:
+            _save_site_positions(args.mjcf, model, state.site_ids)
+            state.dirty = False
 
     def key_callback(keycode: int) -> None:
         try:
@@ -172,8 +262,12 @@ def main() -> None:
         key_upper = key.upper()
 
         if key_upper == "N":
+            if args.save_on_switch:
+                save_if_needed()
             state.selected_idx = (state.selected_idx + 1) % len(state.site_ids)
         elif key_upper == "P":
+            if args.save_on_switch:
+                save_if_needed()
             state.selected_idx = (state.selected_idx - 1) % len(state.site_ids)
         elif key_upper in {"X", "A", "Y", "B", "Z", "C"}:
             axis = {"X": 0, "A": 0, "Y": 1, "B": 1, "Z": 2, "C": 2}[key_upper]
@@ -185,6 +279,9 @@ def main() -> None:
             state.step *= 2.0
         elif key == "-":
             state.step = max(state.step * 0.5, 1e-5)
+        elif key_upper == "M":
+            state.dirty = _mirror_site_to_pair(model, selected_site_id) or state.dirty
+            moved = state.dirty
         elif key == "s":
             _save_site_positions(args.mjcf, model, state.site_ids)
             state.dirty = False
@@ -195,6 +292,10 @@ def main() -> None:
 
         _highlight_sites(model, state, args.site_size)
         mujoco.mj_forward(model, data)
+        if args.mirror_on_edit and moved and key_upper != "M":
+            _mirror_site_to_pair(model, selected_site_id)
+        if args.autosave and moved:
+            _autosave_site_positions(args.mjcf, model, state.site_ids, state)
         if moved or key_upper in {"N", "P"} or key in {"=", "-", "s"}:
             _print_selected(model, state)
 

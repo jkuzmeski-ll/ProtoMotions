@@ -21,7 +21,7 @@ def robot_config(robot_name: str, **updates) -> RobotConfig:
 
     Args:
         robot_name: Name of the robot type (smpl, smplx, amp, g1, h1_2, soma23, rigv1, ms_human_lower,
-            ms_human_lower_s003)
+            ms_human_lower_s003, ms_human_lower_s081)
         **updates: Optional field updates to apply to the robot config
 
     Returns:
@@ -66,6 +66,10 @@ def robot_config(robot_name: str, **updates) -> RobotConfig:
         from protomotions.robot_configs.ms_human_lower_s003 import MSHumanLowerS003RobotConfig
 
         config = MSHumanLowerS003RobotConfig()
+    elif robot_name == "ms_human_lower_s081":
+        from protomotions.robot_configs.ms_human_lower_s081 import MSHumanLowerS081RobotConfig
+
+        config = MSHumanLowerS081RobotConfig()
     else:
         raise ValueError(f"Invalid robot name: {robot_name}")
 

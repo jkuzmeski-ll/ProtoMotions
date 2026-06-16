@@ -27,11 +27,13 @@ in the base model for now, by design.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import math
 from pathlib import Path
 import shutil
 import xml.etree.ElementTree as ET
+from typing import Any
 
 import numpy as np
 
@@ -41,6 +43,8 @@ from protomotions.utils.c3d_io import load_c3d, marker_index, read_metadata
 BASE_XML = Path("protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-Simple.xml")
 DEFAULT_OUTPUT_XML = Path("protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S003.xml")
 DEFAULT_REPORT = Path("data/ms-human-lower-retargeted/S003_scaling_report.json")
+DEFAULT_OUTPUT_XML_TEMPLATE = "MS-Human-700-Locomotion-{subject_id}.xml"
+DEFAULT_REPORT_TEMPLATE = "{subject_id}_scaling_report.json"
 
 
 BODY_SCALE_GROUPS = {
@@ -95,14 +99,31 @@ GEOM_SCALE_GROUPS = {
 }
 
 
+# Marker sites attached directly to pelvis need lateral subject scaling too, but
+# applying pelvis_width to all pelvis geoms would distort the pelvis collision
+#/visual geometry.  Keep this limited to generated mocap marker sites.
+MARKER_SITE_SCALE_GROUPS = {
+    "pelvis_width": ["pelvis"],
+}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("c3d", type=Path, help="Subject C3D file with an initial static pose window.")
     parser.add_argument("--base-xml", type=Path, default=BASE_XML, help="Base simplified MS-Human MJCF.")
-    parser.add_argument("--output-xml", type=Path, default=DEFAULT_OUTPUT_XML, help="Scaled subject MJCF.")
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT, help="JSON scaling report path.")
-    parser.add_argument("--static-start", type=int, default=1, help="First 1-based C3D static frame.")
-    parser.add_argument("--static-end", type=int, default=200, help="Last 1-based C3D static frame, inclusive.")
+    parser.add_argument(
+        "--marker-config",
+        type=Path,
+        help="JSON config defining marker-derived points and segment lengths used for scaling.",
+    )
+    parser.add_argument(
+        "--subject-id",
+        help="Subject identifier used in default output/report names; overrides marker_config subject_id.",
+    )
+    parser.add_argument("--output-xml", type=Path, help="Scaled subject MJCF.")
+    parser.add_argument("--report", type=Path, help="JSON scaling report path.")
+    parser.add_argument("--static-start", type=int, help="First 1-based C3D static frame.")
+    parser.add_argument("--static-end", type=int, help="Last 1-based C3D static frame, inclusive.")
     parser.add_argument(
         "--auto-static",
         action="store_true",
@@ -124,6 +145,11 @@ def parse_args() -> argparse.Namespace:
         "--copy-base-asset-dir",
         action="store_true",
         help="Copy the whole base MJCF directory before writing output if output lives elsewhere.",
+    )
+    parser.add_argument(
+        "--list-markers",
+        action="store_true",
+        help="Print C3D marker labels and exit without writing a scaled MJCF.",
     )
     return parser.parse_args()
 
@@ -152,11 +178,159 @@ def _optional_mean_marker(data, name: str) -> np.ndarray | None:
         return None
 
 
-def detect_static_window(c3d: Path, start_frame: int, search_frames: int, window: int) -> tuple[int, int]:
+def load_marker_config(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _marker_mean_m(data, name: str, unit_scale: float) -> np.ndarray:
+    return _mean_valid(_marker(data, name)) * unit_scale
+
+
+def _marker_mean_many_m(data, names: list[str], unit_scale: float) -> np.ndarray:
+    if not names:
+        raise ValueError("Point config mean/midpoint requires at least one marker")
+    points = np.stack([_marker_mean_m(data, name, unit_scale) for name in names], axis=0)
+    return _mean_valid(points)
+
+
+def _pelvis_hip_center_from_markers(
+    data,
+    spec: Mapping[str, Any],
+    unit_scale: float,
+) -> np.ndarray:
+    side = str(spec.get("side", "right")).lower()
+    if side not in {"right", "left"}:
+        raise ValueError(f"pelvis_hip_center side must be 'right' or 'left', got {side!r}")
+
+    rasi = _marker_mean_m(data, str(spec.get("rasi", "RASI")), unit_scale)
+    lasi = _marker_mean_m(data, str(spec.get("lasi", "LASI")), unit_scale)
+    rpsi = _marker_mean_m(data, str(spec.get("rpsi", "RPSI")), unit_scale)
+    lpsi = _marker_mean_m(data, str(spec.get("lpsi", "LPSI")), unit_scale)
+
+    asis_mid = 0.5 * (rasi + lasi)
+    psis_mid = 0.5 * (rpsi + lpsi)
+    asis_distance = _distance(rasi, lasi)
+
+    ml_axis = _norm((rasi - lasi)[None])[0]
+    ap_axis = _norm((asis_mid - psis_mid)[None])[0]
+    axial_axis = _norm(np.cross(ml_axis, ap_axis)[None])[0]
+
+    ml_coeff = float(spec.get("ml_coeff", 0.36))
+    ap_coeff = float(spec.get("ap_coeff", -0.19))
+    axial_coeff = float(spec.get("axial_coeff", -0.30))
+    ml_sign = 1.0 if side == "right" else -1.0
+    return (
+        asis_mid
+        + ml_sign * ml_coeff * asis_distance * ml_axis
+        + ap_coeff * asis_distance * ap_axis
+        + axial_coeff * asis_distance * axial_axis
+    )
+
+
+def _resolve_point(
+    data,
+    name: str,
+    point_specs: Mapping[str, Any],
+    resolved: dict[str, np.ndarray],
+    unit_scale: float,
+) -> np.ndarray:
+    if name in resolved:
+        return resolved[name]
+    if name not in point_specs:
+        raise KeyError(f"Point {name!r} is referenced by marker config but is not defined")
+
+    spec = point_specs[name]
+    if isinstance(spec, str):
+        point = _marker_mean_m(data, spec, unit_scale)
+    elif isinstance(spec, list):
+        point = _marker_mean_many_m(data, [str(marker) for marker in spec], unit_scale)
+    elif isinstance(spec, Mapping):
+        if "marker" in spec:
+            point = _marker_mean_m(data, str(spec["marker"]), unit_scale)
+        elif "mean" in spec:
+            point = _marker_mean_many_m(
+                data,
+                [str(marker) for marker in spec["mean"]],
+                unit_scale,
+            )
+        elif "midpoint" in spec:
+            point = _marker_mean_many_m(
+                data,
+                [str(marker) for marker in spec["midpoint"]],
+                unit_scale,
+            )
+        elif "pelvis_hip_center" in spec:
+            point = _pelvis_hip_center_from_markers(data, spec["pelvis_hip_center"], unit_scale)
+        elif "from_point" in spec and "to_point" in spec and "fraction" in spec:
+            start = _resolve_point(data, str(spec["from_point"]), point_specs, resolved, unit_scale)
+            end = _resolve_point(data, str(spec["to_point"]), point_specs, resolved, unit_scale)
+            point = start + float(spec["fraction"]) * (end - start)
+        else:
+            raise ValueError(f"Unsupported point config for {name!r}: {spec}")
+    else:
+        raise TypeError(f"Unsupported point config type for {name!r}: {type(spec).__name__}")
+
+    resolved[name] = point
+    return point
+
+
+def compute_subject_lengths_from_config(
+    c3d: Path,
+    static_start: int,
+    static_end: int,
+    marker_config: Mapping[str, Any],
+) -> dict[str, float]:
+    data = load_c3d(c3d, start_frame=static_start, end_frame=static_end)
+    unit_scale = 0.001 if data.point_units.lower() in {"mm", "millimeter", "millimeters"} else 1.0
+    point_specs = marker_config.get("points", {})
+    length_specs = marker_config.get("lengths", {})
+    if not isinstance(point_specs, Mapping) or not isinstance(length_specs, Mapping):
+        raise TypeError("marker config must contain object-valued 'points' and 'lengths' sections")
+
+    resolved: dict[str, np.ndarray] = {}
+    subject_lengths: dict[str, float] = {}
+    for length_name, spec in length_specs.items():
+        if not isinstance(spec, Mapping):
+            raise TypeError(f"Length config for {length_name!r} must be an object")
+        if "markers" in spec:
+            markers = [str(marker) for marker in spec["markers"]]
+            if len(markers) != 2:
+                raise ValueError(
+                    f"Length config {length_name!r} markers field must contain exactly two markers"
+                )
+            start = _marker_mean_m(data, markers[0], unit_scale)
+            end = _marker_mean_m(data, markers[1], unit_scale)
+        else:
+            start = _resolve_point(data, str(spec["from"]), point_specs, resolved, unit_scale)
+            end = _resolve_point(data, str(spec["to"]), point_specs, resolved, unit_scale)
+        subject_lengths[str(length_name)] = _distance(start, end)
+    return subject_lengths
+
+
+def detect_static_window(
+    c3d: Path,
+    start_frame: int,
+    search_frames: int,
+    window: int,
+    labels: list[str] | None = None,
+) -> tuple[int, int]:
     metadata = read_metadata(c3d)
     end = min(metadata.header.last_frame, start_frame + search_frames - 1)
     data = load_c3d(c3d, start_frame=start_frame, end_frame=end)
-    labels = ["RASI", "LASI", "RPSI", "LPSI", "RKNE", "LKNE", "RANK", "LANK", "RTOE", "LTOE"]
+    labels = labels or [
+        "RASI",
+        "LASI",
+        "RPSI",
+        "LPSI",
+        "RKNE",
+        "LKNE",
+        "RANK",
+        "LANK",
+        "RTOE",
+        "LTOE",
+    ]
     marker_ids = [marker_index(data.marker_labels, label) for label in labels]
     pts = data.markers[:, marker_ids]
     speed = np.linalg.norm(np.diff(pts, axis=0), axis=-1)
@@ -193,8 +367,18 @@ def compute_subject_lengths(c3d: Path, static_start: int, static_end: int) -> di
     else:
         # Visual3D/CODA pelvis hip-center formula from the MDH:
         # MCS_ML = +/-0.36*ASIS, MCS_AP = -0.19*ASIS, MCS_AXIAL = -0.30*ASIS.
-        right_hip = asis_mid + 0.36 * asis_distance * ml_axis - 0.19 * asis_distance * ap_axis - 0.30 * asis_distance * axial_axis
-        left_hip = asis_mid - 0.36 * asis_distance * ml_axis - 0.19 * asis_distance * ap_axis - 0.30 * asis_distance * axial_axis
+        right_hip = (
+            asis_mid
+            + 0.36 * asis_distance * ml_axis
+            - 0.19 * asis_distance * ap_axis
+            - 0.30 * asis_distance * axial_axis
+        )
+        left_hip = (
+            asis_mid
+            - 0.36 * asis_distance * ml_axis
+            - 0.19 * asis_distance * ap_axis
+            - 0.30 * asis_distance * axial_axis
+        )
 
     rkne = _mean_valid(_marker(data, "RKNE")) * unit_scale
     lkne = _mean_valid(_marker(data, "LKNE")) * unit_scale
@@ -256,8 +440,12 @@ def _format_vec(vec: np.ndarray) -> str:
 
 def compute_base_lengths(root: ET.Element) -> dict[str, float]:
     bodies = _body_by_name(root)
-    foot_r = np.linalg.norm(_parse_vec(bodies["calcn_r"].get("pos"))) + np.linalg.norm(_parse_vec(bodies["toes_r"].get("pos")))
-    foot_l = np.linalg.norm(_parse_vec(bodies["calcn_l"].get("pos"))) + np.linalg.norm(_parse_vec(bodies["toes_l"].get("pos")))
+    foot_r = np.linalg.norm(_parse_vec(bodies["calcn_r"].get("pos"))) + np.linalg.norm(
+        _parse_vec(bodies["toes_r"].get("pos"))
+    )
+    foot_l = np.linalg.norm(_parse_vec(bodies["calcn_l"].get("pos"))) + np.linalg.norm(
+        _parse_vec(bodies["toes_l"].get("pos"))
+    )
     torso_names = [
         "sacrum",
         "lumbar5",
@@ -280,7 +468,7 @@ def compute_base_lengths(root: ET.Element) -> dict[str, float]:
         "head_neck",
     ]
     torso = sum(np.linalg.norm(_parse_vec(bodies[name].get("pos"))) for name in torso_names if name in bodies)
-    return {
+    base_lengths = {
         "hip_offset_r": float(np.linalg.norm(_parse_vec(bodies["femur_r"].get("pos")))),
         "hip_offset_l": float(np.linalg.norm(_parse_vec(bodies["femur_l"].get("pos")))),
         "thigh_r": float(np.linalg.norm(_parse_vec(bodies["tibia_r"].get("pos")))),
@@ -291,6 +479,11 @@ def compute_base_lengths(root: ET.Element) -> dict[str, float]:
         "foot_l": float(foot_l),
         "torso": float(torso),
     }
+    rasi = bodies["pelvis"].find("site[@name='mocap_RASI']")
+    lasi = bodies["pelvis"].find("site[@name='mocap_LASI']")
+    if rasi is not None and lasi is not None:
+        base_lengths["pelvis_width"] = float(np.linalg.norm(_parse_vec(rasi.get("pos")) - _parse_vec(lasi.get("pos"))))
+    return base_lengths
 
 
 def apply_scales(root: ET.Element, scales: dict[str, float]) -> dict[str, dict[str, list[float]]]:
@@ -349,6 +542,108 @@ def apply_geometry_scales(root: ET.Element, scales: dict[str, float]) -> dict[st
     return changed
 
 
+def _find_or_create_asset(root: ET.Element) -> ET.Element:
+    asset = root.find("asset")
+    if asset is not None:
+        return asset
+    asset = ET.Element("asset")
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        root.append(asset)
+    else:
+        root.insert(list(root).index(worldbody), asset)
+    return asset
+
+
+def _mesh_file_for_name(base_xml_dir: Path, mesh_name: str) -> str | None:
+    for suffix in (".stl", ".obj"):
+        candidate = Path("Geometry") / f"{mesh_name}{suffix}"
+        if (base_xml_dir / candidate).is_file():
+            return candidate.as_posix()
+    return None
+
+
+def apply_mesh_asset_scales(
+    root: ET.Element,
+    scales: dict[str, float],
+    base_xml_dir: Path,
+) -> dict[str, dict[str, object]]:
+    """Define scaled mesh assets for segment bone meshes.
+
+    MuJoCo's implicit mesh loading keeps referenced STL/OBJ vertices at their
+    original size.  Scaling body offsets and geom/site positions is not enough
+    for ``geom type="mesh"`` bone visuals, because those geoms have no size to
+    multiply.  Add explicit mesh assets with a per-segment scale so the visible
+    bone mesh follows the scaled joints and marker sites.
+    """
+    bodies = _body_by_name(root)
+    asset = _find_or_create_asset(root)
+    changed: dict[str, dict[str, object]] = {}
+    for scale_name, body_names in GEOM_SCALE_GROUPS.items():
+        scale = scales.get(scale_name, 1.0)
+        if not np.isfinite(scale) or scale <= 0 or abs(scale - 1.0) < 1e-9:
+            continue
+        for body_name in body_names:
+            body = bodies.get(body_name)
+            if body is None:
+                continue
+            mesh_names: list[str] = []
+            for geom in body.findall("geom"):
+                if geom.get("type") != "mesh" or geom.get("mesh") is None:
+                    continue
+                mesh_name = str(geom.get("mesh"))
+                mesh_file = _mesh_file_for_name(base_xml_dir, mesh_name)
+                if mesh_file is None:
+                    continue
+                scaled_mesh_name = f"{mesh_name}_{scale_name}_scaled"
+                mesh_elem = asset.find(f"mesh[@name='{scaled_mesh_name}']")
+                if mesh_elem is None:
+                    ET.SubElement(
+                        asset,
+                        "mesh",
+                        {
+                            "name": scaled_mesh_name,
+                            "file": mesh_file,
+                            "scale": f"{scale:.9g} {scale:.9g} {scale:.9g}",
+                        },
+                    )
+                else:
+                    mesh_elem.set("file", mesh_elem.get("file") or mesh_file)
+                    mesh_elem.set("scale", f"{scale:.9g} {scale:.9g} {scale:.9g}")
+                geom.set("mesh", scaled_mesh_name)
+                mesh_names.append(f"{mesh_name}->{scaled_mesh_name}")
+            if mesh_names:
+                changed[body_name] = {"scale": float(scale), "meshes": mesh_names}
+    if not list(asset):
+        root.remove(asset)
+    return changed
+
+
+def apply_marker_site_scales(
+    root: ET.Element,
+    scales: dict[str, float],
+    site_prefix: str = "mocap_",
+) -> dict[str, dict[str, float]]:
+    """Scale generated marker sites that are not covered by geometry scaling."""
+    bodies = _body_by_name(root)
+    changed: dict[str, dict[str, float]] = {}
+    for scale_name, body_names in MARKER_SITE_SCALE_GROUPS.items():
+        scale = scales.get(scale_name, 1.0)
+        if not np.isfinite(scale) or scale <= 0 or abs(scale - 1.0) < 1e-9:
+            continue
+        for body_name in body_names:
+            body = bodies.get(body_name)
+            if body is None:
+                continue
+            count = 0
+            for site in body.findall("site"):
+                if (site.get("name") or "").startswith(site_prefix):
+                    count += _scale_attr(site, "pos", scale)
+            if count:
+                changed[body_name] = {"scale": float(scale), "scaled_attrs": int(count)}
+    return changed
+
+
 def maybe_copy_asset_dir(base_xml: Path, output_xml: Path, copy_base_asset_dir: bool) -> None:
     if not copy_base_asset_dir:
         output_xml.parent.mkdir(parents=True, exist_ok=True)
@@ -361,16 +656,65 @@ def maybe_copy_asset_dir(base_xml: Path, output_xml: Path, copy_base_asset_dir: 
     shutil.copytree(base_xml.parent, output_xml.parent)
 
 
+def _default_output_paths(
+    base_xml: Path,
+    subject_id: str | None,
+    output_xml: Path | None,
+    report: Path | None,
+) -> tuple[Path, Path]:
+    if subject_id:
+        generated_output_xml = base_xml.parent / DEFAULT_OUTPUT_XML_TEMPLATE.format(subject_id=subject_id)
+        generated_report = DEFAULT_REPORT.parent / DEFAULT_REPORT_TEMPLATE.format(subject_id=subject_id)
+    else:
+        generated_output_xml = DEFAULT_OUTPUT_XML
+        generated_report = DEFAULT_REPORT
+    return output_xml or generated_output_xml, report or generated_report
+
+
+def print_c3d_markers(c3d: Path) -> None:
+    metadata = read_metadata(c3d)
+    labels = metadata.parameters.get("POINT.LABELS", [])
+    print(f"C3D: {c3d}")
+    print(
+        f"Frames: {metadata.header.first_frame}-{metadata.header.last_frame} "
+        f"rate={metadata.header.point_rate:g} Hz points={metadata.header.point_count}"
+    )
+    for idx, label in enumerate(labels, start=1):
+        print(f"{idx:03d}: {label}")
+
+
 def main() -> None:
     args = parse_args()
+    if args.list_markers:
+        print_c3d_markers(args.c3d)
+        return
+
+    marker_config = load_marker_config(args.marker_config)
+    subject_id = args.subject_id or marker_config.get("subject_id")
+    subject_id = str(subject_id) if subject_id is not None else None
+    output_xml, report_path = _default_output_paths(args.base_xml, subject_id, args.output_xml, args.report)
+
+    static_config = marker_config.get("static", {}) if isinstance(marker_config.get("static", {}), Mapping) else {}
+    static_start_arg = args.static_start or int(static_config.get("start", 1))
+    static_end_arg = args.static_end or int(static_config.get("end", 200))
     if args.auto_static:
+        static_detection_markers = marker_config.get("static_detection_markers")
+        if static_detection_markers is not None:
+            static_detection_markers = [str(marker) for marker in static_detection_markers]
         static_start, static_end = detect_static_window(
-            args.c3d, args.static_start, args.auto_search_frames, args.auto_window
+            args.c3d,
+            static_start_arg,
+            args.auto_search_frames,
+            args.auto_window,
+            static_detection_markers,
         )
     else:
-        static_start, static_end = args.static_start, args.static_end
+        static_start, static_end = static_start_arg, static_end_arg
 
-    subject_lengths = compute_subject_lengths(args.c3d, static_start, static_end)
+    if marker_config:
+        subject_lengths = compute_subject_lengths_from_config(args.c3d, static_start, static_end, marker_config)
+    else:
+        subject_lengths = compute_subject_lengths(args.c3d, static_start, static_end)
 
     tree = ET.parse(args.base_xml)
     root = tree.getroot()
@@ -382,32 +726,40 @@ def main() -> None:
     }
     changed = apply_scales(root, scales)
     geom_changed = apply_geometry_scales(root, scales)
+    mesh_asset_changed = apply_mesh_asset_scales(root, scales, args.base_xml.parent)
+    marker_site_changed = apply_marker_site_scales(root, scales)
 
-    maybe_copy_asset_dir(args.base_xml, args.output_xml, args.copy_base_asset_dir)
-    tree.write(args.output_xml, encoding="utf-8", xml_declaration=False)
+    maybe_copy_asset_dir(args.base_xml, output_xml, args.copy_base_asset_dir)
+    tree.write(output_xml, encoding="utf-8", xml_declaration=False)
 
     report = {
         "c3d": str(args.c3d),
         "base_xml": str(args.base_xml),
-        "output_xml": str(args.output_xml),
+        "output_xml": str(output_xml),
+        "marker_config": str(args.marker_config) if args.marker_config else None,
+        "subject_id": subject_id,
         "static_window": [static_start, static_end],
         "subject_lengths_m": subject_lengths,
         "base_lengths_m": base_lengths,
         "scales": scales,
         "changed_bodies": changed,
         "changed_geometry": geom_changed,
+        "changed_mesh_assets": mesh_asset_changed,
+        "changed_marker_sites": marker_site_changed,
         "notes": [
             "Kinematic body offsets were scaled; masses/inertias were intentionally left unchanged.",
-            "Segment geometry (skin capsules, wrap surfaces, muscle sites) was scaled about each body origin to track the new joint offsets.",
+            "Segment geometry (skin capsules, wrap surfaces, muscle sites) was scaled about each body "
+            "origin to track the new joint offsets.",
+            "Bone mesh assets were given explicit mesh scale attributes so visual meshes track the scaled segments.",
             "Hip centers use the Visual3D/CODA pelvis formulas from the MDH file.",
         ],
     }
-    args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     print(f"Static window: {static_start}-{static_end}")
-    print(f"Wrote scaled MJCF: {args.output_xml}")
-    print(f"Wrote scaling report: {args.report}")
+    print(f"Wrote scaled MJCF: {output_xml}")
+    print(f"Wrote scaling report: {report_path}")
     for name, scale in scales.items():
         print(f"  {name}: subject={subject_lengths[name]:.4f} m base={base_lengths[name]:.4f} m scale={scale:.3f}")
 
