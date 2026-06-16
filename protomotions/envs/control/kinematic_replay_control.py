@@ -45,6 +45,12 @@ class KinematicReplayControlConfig(ControlComponentConfig):
 
 class KinematicReplayControl(ControlComponent):
     """Plays reference motions kinematically (bypasses physics)."""
+
+    MARKER_COLORS = {
+        "marker_targets": (1.0, 0.45, 0.0),
+        "marker_reconstructed": (0.0, 0.9, 0.2),
+        "marker_site_positions": (0.1, 0.45, 1.0),
+    }
     
     config: KinematicReplayControlConfig
     
@@ -166,13 +172,17 @@ class KinematicReplayControl(ControlComponent):
         num_markers = next(iter(self._marker_data.values())).shape[1]
         markers = [MarkerConfig(size="small") for _ in range(num_markers)]
         configs = {}
-        if "marker_targets" in self._marker_data:
-            configs["marker_targets"] = VisualizationMarkerConfig(
-                type="sphere", color=(1.0, 0.45, 0.0), markers=markers
-            )
-        if "marker_reconstructed" in self._marker_data:
-            configs["marker_reconstructed"] = VisualizationMarkerConfig(
-                type="sphere", color=(0.0, 0.9, 0.2), markers=markers
+        fallback_colors = [
+            (0.8, 0.2, 1.0),
+            (0.1, 0.8, 1.0),
+            (1.0, 0.9, 0.1),
+            (1.0, 0.1, 0.3),
+        ]
+        for marker_idx, key in enumerate(self._marker_data):
+            configs[key] = VisualizationMarkerConfig(
+                type="sphere",
+                color=self.MARKER_COLORS.get(key, fallback_colors[marker_idx % len(fallback_colors)]),
+                markers=markers,
             )
         return configs
 

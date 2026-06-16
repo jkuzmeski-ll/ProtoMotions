@@ -45,6 +45,8 @@ from newton.solvers import SolverNotifyFlags
 import copy
 import logging
 
+from protomotions.utils import rotations
+
 log = logging.getLogger(__name__)
 
 
@@ -137,6 +139,7 @@ class NewtonSimulator(Simulator):
         self._contact_forces = {}  # Store contact forces per body
         self.contacts = None  # Initialized after solver/sensors are set up
         self._camera_initialized = False
+        self._newton_visualization_markers = {}
 
     def _create_simulation(self) -> None:
         """Create the Newton simulation environment."""
@@ -144,6 +147,7 @@ class NewtonSimulator(Simulator):
         self._zero_passive_forces()
         self._setup_robot()
         self._setup_sim()
+        self._setup_markers(self._visualization_markers)
         if self.robot_config.contact_bodies is not None:
             self._setup_contact_sensors()
         self._create_contacts()
@@ -675,7 +679,32 @@ class NewtonSimulator(Simulator):
         self, visualization_markers: Dict[str, VisualizationMarkerConfig]
     ) -> None:
         """Setup visualization markers."""
-        return
+        self._newton_visualization_markers = {}
+        if visualization_markers is None:
+            return
+
+        marker_radii = {"tiny": 0.007, "small": 0.01, "regular": 0.05}
+        for marker_name, markers_cfg in visualization_markers.items():
+            if markers_cfg.type not in ["sphere", "arrow"]:
+                raise ValueError(f"Marker type {markers_cfg.type} not supported")
+
+            scale_groups = {}
+            for marker_idx, marker in enumerate(markers_cfg.markers):
+                scale_groups.setdefault(marker.size, []).append(marker_idx)
+
+            self._newton_visualization_markers[marker_name] = {
+                "marker_type": markers_cfg.type,
+                "marker_color": markers_cfg.color,
+                "scale_groups": {
+                    marker_size: {
+                        "indices": torch.tensor(
+                            indices, device=self.device, dtype=torch.long
+                        ),
+                        "radius": marker_radii[marker_size],
+                    }
+                    for marker_size, indices in scale_groups.items()
+                },
+            }
 
     @staticmethod
     def _get_contact_sensor_body_patterns(body_name: str) -> List[str]:
@@ -1358,4 +1387,93 @@ class NewtonSimulator(Simulator):
         self, markers_state: Optional[Dict[str, MarkerState]] = None
     ) -> None:
         """Updates visualization markers."""
-        pass
+        if self.viewer is None or markers_state is None:
+            return
+
+        viewer_device = self.viewer.device
+        torch_viewer_device = torch.device(str(viewer_device))
+
+        for marker_name, marker_state in markers_state.items():
+            marker_config = self._newton_visualization_markers.get(marker_name)
+            if marker_config is None:
+                continue
+
+            marker_pos_all = marker_state.translation.reshape(self.num_envs, -1, 3)
+            marker_color = marker_state.color or marker_config["marker_color"]
+
+            if marker_config["marker_type"] == "sphere":
+                for marker_size, scale_group in marker_config["scale_groups"].items():
+                    group_marker_pos = marker_pos_all[:, scale_group["indices"]]
+                    flat_marker_pos = (
+                        group_marker_pos.reshape(-1, 3)
+                        .to(device=torch_viewer_device)
+                        .contiguous()
+                    )
+                    num_markers = flat_marker_pos.shape[0]
+                    radii = wp.full(
+                        num_markers,
+                        scale_group["radius"],
+                        dtype=wp.float32,
+                        device=viewer_device,
+                    )
+                    colors = wp.full(
+                        num_markers,
+                        wp.vec3(*marker_color),
+                        dtype=wp.vec3,
+                        device=viewer_device,
+                    )
+                    self.viewer.log_points(
+                        f"markers/{marker_name}/{marker_size}",
+                        wp.from_torch(flat_marker_pos, dtype=wp.vec3),
+                        radii=radii,
+                        colors=colors,
+                    )
+            elif marker_config["marker_type"] == "arrow":
+                marker_quat = marker_state.orientation.reshape(self.num_envs, -1, 4)
+                for marker_size, scale_group in marker_config["scale_groups"].items():
+                    group_marker_pos = marker_pos_all[:, scale_group["indices"]]
+                    group_marker_quat = marker_quat[:, scale_group["indices"]]
+
+                    flat_marker_pos = (
+                        group_marker_pos.reshape(-1, 3)
+                        .to(device=torch_viewer_device)
+                        .contiguous()
+                    )
+                    flat_marker_quat = (
+                        group_marker_quat.reshape(-1, 4)
+                        .to(device=torch_viewer_device)
+                        .contiguous()
+                    )
+                    base_dir = torch.tensor(
+                        [1.0, 0.0, 0.0],
+                        device=torch_viewer_device,
+                        dtype=flat_marker_pos.dtype,
+                    ).expand(flat_marker_quat.shape[0], -1)
+                    arrow_length = 0.15 if marker_size == "small" else 0.3
+                    arrow_vectors = rotations.quat_rotate(
+                        flat_marker_quat,
+                        base_dir,
+                        w_last=self.data_conversion.sim_w_last,
+                    )
+                    flat_marker_end = (
+                        flat_marker_pos + arrow_length * arrow_vectors
+                    ).contiguous()
+                    num_markers = flat_marker_pos.shape[0]
+                    colors = wp.full(
+                        num_markers,
+                        wp.vec3(*marker_color),
+                        dtype=wp.vec3,
+                        device=viewer_device,
+                    )
+
+                    self.viewer.log_lines(
+                        f"markers/{marker_name}/{marker_size}",
+                        wp.from_torch(flat_marker_pos, dtype=wp.vec3),
+                        wp.from_torch(flat_marker_end, dtype=wp.vec3),
+                        colors=colors,
+                        width=max(scale_group["radius"], 0.01),
+                    )
+            else:
+                raise ValueError(
+                    f"Marker type {marker_config['marker_type']} not supported"
+                )

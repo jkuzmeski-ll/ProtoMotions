@@ -25,6 +25,7 @@ import json
 import math
 import os
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,6 +127,13 @@ class MarkerSet:
     valid: torch.Tensor
 
 
+@dataclass(frozen=True)
+class MarkerSite:
+    site_name: str
+    body_name: str
+    local_offset: tuple[float, float, float]
+
+
 @dataclass
 class RMSStats:
     overall_mm: float
@@ -194,12 +202,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--newton-jacobian", choices=["analytic", "autodiff", "mixed"], default="analytic")
     parser.add_argument("--newton-lambda", type=float, default=1e-2, help="Initial LM damping for Newton IK.")
     parser.add_argument("--newton-step-size", type=float, default=1.0)
+    parser.add_argument(
+        "--joint-limit-weight",
+        type=float,
+        default=0.0,
+        help="Newton IK joint-limit objective weight. Set >0 to discourage foot/ankle twists outside MJCF joint ranges.",
+    )
     parser.add_argument("--marker-weight", type=float, default=1.0)
     parser.add_argument(
         "--foot-marker-weight",
         type=float,
         default=1.0,
         help="Newton IK weight for heel/toe markers. Higher values prioritize contact-body marker accuracy.",
+    )
+    parser.add_argument(
+        "--marker-offset-source",
+        choices=["calibrated", "site", "site-or-calibrated"],
+        default="calibrated",
+        help=(
+            "How to choose each marker's local offset on its body. 'calibrated' learns offsets from the C3D trial; "
+            "'site' requires an MJCF <site> for every used marker; 'site-or-calibrated' uses MJCF sites where present "
+            "and calibrates the rest."
+        ),
+    )
+    parser.add_argument(
+        "--marker-site-prefix",
+        default="mocap_",
+        help="MJCF marker site prefix. With the default, RHEE first looks for site name 'mocap_RHEE', then 'RHEE'.",
     )
     parser.add_argument(
         "--offset-refine-passes",
@@ -363,7 +392,65 @@ def _normalized_marker_positions(data) -> np.ndarray:
     return markers
 
 
-def _build_marker_set(data, body_names: list[str], device: torch.device) -> MarkerSet:
+def _asset_xml_path(cfg) -> Path:
+    return Path(cfg.asset.asset_root) / cfg.asset.asset_file_name
+
+
+def _parse_site_pos(site: ET.Element) -> tuple[float, float, float]:
+    pos_text = site.get("pos", "0 0 0")
+    values = [float(value) for value in pos_text.split()]
+    if len(values) != 3:
+        raise ValueError(f"MJCF site '{site.get('name', '<unnamed>')}' has invalid pos='{pos_text}'.")
+    return values[0], values[1], values[2]
+
+
+def _marker_site_name_candidates(marker_label: str, site_prefix: str) -> list[str]:
+    candidates: list[str] = []
+    if site_prefix:
+        candidates.append(f"{site_prefix}{marker_label}")
+    candidates.append(marker_label)
+    return candidates
+
+
+def _load_marker_sites(cfg, site_prefix: str) -> dict[str, MarkerSite]:
+    xml_path = _asset_xml_path(cfg)
+    root = ET.parse(xml_path).getroot()
+    candidate_to_label = {
+        candidate: label
+        for label in MARKER_BODY_MAP
+        for candidate in _marker_site_name_candidates(label, site_prefix)
+    }
+    marker_sites: dict[str, MarkerSite] = {}
+    for body in root.iter("body"):
+        body_name = body.get("name")
+        if body_name is None:
+            continue
+        for site in body.findall("site"):
+            site_name = site.get("name")
+            if site_name not in candidate_to_label:
+                continue
+            label = candidate_to_label[site_name]
+            if label in marker_sites:
+                previous = marker_sites[label]
+                raise ValueError(
+                    f"Marker {label} has duplicate MJCF marker sites: "
+                    f"{previous.site_name} on {previous.body_name} and {site_name} on {body_name}."
+                )
+            marker_sites[label] = MarkerSite(
+                site_name=site_name,
+                body_name=body_name,
+                local_offset=_parse_site_pos(site),
+            )
+    return marker_sites
+
+
+def _build_marker_set(
+    data,
+    body_names: list[str],
+    device: torch.device,
+    marker_sites: dict[str, MarkerSite] | None = None,
+    prefer_site_bodies: bool = False,
+) -> MarkerSet:
     body_index = {name: idx for idx, name in enumerate(body_names)}
     marker_positions = _normalized_marker_positions(data)
 
@@ -371,7 +458,9 @@ def _build_marker_set(data, body_names: list[str], device: torch.device) -> Mark
     bodies: list[int] = []
     targets: list[np.ndarray] = []
     skipped: list[str] = []
-    for marker_label, body_name in MARKER_BODY_MAP.items():
+    for marker_label, mapped_body_name in MARKER_BODY_MAP.items():
+        marker_site = marker_sites.get(marker_label) if marker_sites is not None else None
+        body_name = marker_site.body_name if prefer_site_bodies and marker_site is not None else mapped_body_name
         if body_name not in body_index:
             skipped.append(f"{marker_label}->{body_name} (missing body)")
             continue
@@ -401,6 +490,48 @@ def _build_marker_set(data, body_names: list[str], device: torch.device) -> Mark
         targets=target_tensor,
         valid=valid,
     )
+
+
+def _apply_marker_site_offsets(
+    marker_set: MarkerSet,
+    calibrated_offsets: torch.Tensor,
+    marker_sites: dict[str, MarkerSite],
+    offset_source: str,
+) -> torch.Tensor:
+    if offset_source == "calibrated":
+        return calibrated_offsets
+
+    local_offsets = calibrated_offsets.clone()
+    missing: list[str] = []
+    used: list[str] = []
+    for marker_idx, label in enumerate(marker_set.labels):
+        marker_site = marker_sites.get(label)
+        if marker_site is None:
+            missing.append(label)
+            continue
+        local_offsets[marker_idx] = torch.tensor(
+            marker_site.local_offset,
+            device=calibrated_offsets.device,
+            dtype=calibrated_offsets.dtype,
+        )
+        used.append(f"{label}:{marker_site.site_name}->{marker_site.body_name}")
+
+    if offset_source == "site" and missing:
+        raise ValueError(
+            "--marker-offset-source=site requires MJCF <site> definitions for every used marker. Missing: "
+            + ", ".join(missing)
+        )
+
+    print(
+        f"Marker offset source: {offset_source}; "
+        f"using {len(used)} MJCF marker sites"
+        + (f" and calibrating {len(missing)} missing markers" if missing else "")
+    )
+    if used:
+        print(f"MJCF marker sites: {', '.join(used)}")
+    if missing and offset_source == "site-or-calibrated":
+        print(f"Calibrated marker offsets: {', '.join(missing)}")
+    return local_offsets
 
 
 def _extract_root_rotations(data, device: torch.device, mode: str) -> torch.Tensor:
@@ -964,11 +1095,19 @@ def _create_newton_marker_ik_context(args, cfg, qpos_init: torch.Tensor, marker_
         dtype=torch.float32,
     )
     weights_wp = wp.from_torch(weights_torch, dtype=wp.float32)
-    objective = BatchedMarkerPositionObjective(link_indices_wp, link_offsets_wp, targets_wp, weights_wp)
+    objectives = [BatchedMarkerPositionObjective(link_indices_wp, link_offsets_wp, targets_wp, weights_wp)]
+    if args.joint_limit_weight > 0.0:
+        objectives.append(
+            ik.IKObjectiveJointLimit(
+                model.joint_limit_lower,
+                model.joint_limit_upper,
+                weight=float(args.joint_limit_weight),
+            )
+        )
     solver = ik.IKSolver(
         model,
         qpos_init.shape[0],
-        [objective],
+        objectives,
         optimizer=args.newton_optimizer,
         jacobian_mode=args.newton_jacobian,
         lambda_initial=args.newton_lambda,
@@ -1077,6 +1216,14 @@ def _optimize_qpos_newton(
                 weight=weight,
             )
         )
+    if args.joint_limit_weight > 0.0:
+        objectives.append(
+            ik.IKObjectiveJointLimit(
+                model.joint_limit_lower,
+                model.joint_limit_upper,
+                weight=float(args.joint_limit_weight),
+            )
+        )
 
     solver = ik.IKSolver(
         model,
@@ -1131,6 +1278,7 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         "newton_iterations": args.newton_iterations,
         "newton_optimizer": args.newton_optimizer,
         "newton_jacobian": args.newton_jacobian,
+        "joint_limit_weight": args.joint_limit_weight,
         "chunk_size": args.chunk_size,
         "offset_calibration": args.offset_calibration,
         "offset_refine_passes": args.offset_refine_passes,
@@ -1147,6 +1295,8 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         report["total_ik_elapsed_seconds"] = sum(item["elapsed_seconds"] for item in args._timing_history)
     if hasattr(args, "_joint_angle_plot_paths"):
         report["joint_angle_plots"] = [str(path) for path in args._joint_angle_plot_paths]
+    report["marker_offset_source"] = args.marker_offset_source
+    report["marker_site_prefix"] = args.marker_site_prefix
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
 
@@ -1263,14 +1413,25 @@ def main() -> None:
     ki = cfg.kinematic_info
 
     qpos_init = _initial_qpos(data, ki, device, args.root_orientation, args.warmstart_angle_mode, args.warmstart_clamp_limits)
-    marker_set = _build_marker_set(data, ki.body_names, device)
-    local_offsets = _calibrate_local_offsets(ki, qpos_init, marker_set, args.calibration_frame, args.offset_calibration)
+    marker_sites = _load_marker_sites(cfg, args.marker_site_prefix) if args.marker_offset_source != "calibrated" else {}
+    marker_set = _build_marker_set(
+        data,
+        ki.body_names,
+        device,
+        marker_sites=marker_sites,
+        prefer_site_bodies=args.marker_offset_source != "calibrated",
+    )
+    calibrated_offsets = _calibrate_local_offsets(ki, qpos_init, marker_set, args.calibration_frame, args.offset_calibration)
+    local_offsets = _apply_marker_site_offsets(marker_set, calibrated_offsets, marker_sites, args.marker_offset_source)
     print(
         f"Optimizing {qpos_init.shape[0]} frames at {output_fps} fps on {device} with {args.backend}; "
         f"nq={qpos_init.shape[1]} bodies={ki.num_bodies} markers={len(marker_set.labels)}"
     )
 
     num_refine_passes = max(0, args.offset_refine_passes)
+    if args.marker_offset_source == "site" and num_refine_passes > 0:
+        print("Ignoring --offset-refine-passes because --marker-offset-source=site uses fixed MJCF marker offsets.")
+        num_refine_passes = 0
     use_cached_context = _can_use_batched_marker_objective(args)
     qpos = _optimize_qpos_newton(
         args,
@@ -1285,11 +1446,12 @@ def main() -> None:
         if context_offsets is None:
             if qpos is None:
                 raise RuntimeError("qpos is required for fallback offset calibration.")
-            local_offsets = _calibrate_local_offsets(ki, qpos, marker_set, args.calibration_frame, args.offset_calibration)
+            calibrated_offsets = _calibrate_local_offsets(ki, qpos, marker_set, args.calibration_frame, args.offset_calibration)
             use_context_output_as_input = False
         else:
-            local_offsets = context_offsets
+            calibrated_offsets = context_offsets
             use_context_output_as_input = True
+        local_offsets = _apply_marker_site_offsets(marker_set, calibrated_offsets, marker_sites, args.marker_offset_source)
         print(f"Refining marker offsets from solved qpos: pass {refine_pass + 1}/{args.offset_refine_passes}")
         qpos = _optimize_qpos_newton(
             args,
