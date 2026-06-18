@@ -320,11 +320,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--marker-offset-source",
         choices=["calibrated", "site", "site-or-calibrated"],
-        default="calibrated",
+        default="site-or-calibrated",
         help=(
-            "How to choose each marker's local offset on its body. 'calibrated' learns offsets from the C3D trial; "
-            "'site' requires an MJCF <site> for every used marker; 'site-or-calibrated' uses MJCF sites where present "
-            "and calibrates the rest."
+            "How to choose each marker's local offset on its body. Default 'site-or-calibrated' keeps the marker "
+            "sites fixed on the body and moves the model so those sites reach the markers (the mesh lines up with "
+            "the mocap sites), calibrating only markers without an MJCF <site>. 'site' requires an MJCF <site> for "
+            "every used marker. 'calibrated' instead learns/relocates each virtual marker offset from the C3D trial, "
+            "which yields a lower marker-fit RMS but can make the mesh appear offset from the markers in playback."
         ),
     )
     parser.add_argument(
@@ -337,8 +339,28 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Optional MJCF output path for final calibrated marker offsets. The robot asset XML is used as the "
-            "template, and final local offsets are written as <site> elements named with --marker-site-prefix."
+            "Optional MJCF output path for final calibrated marker offsets. Bake these sites from a static/neutral "
+            "calibration window (for example --max-frames 300 at the start of a static trial), not from a full "
+            "dynamic gait trial. Dynamic-window baking freezes trial-average soft-tissue motion into the sites and "
+            "can bias the model toward bent knees. The robot asset XML is used as the template, and final local "
+            "offsets are written as <site> elements named with --marker-site-prefix."
+        ),
+    )
+    parser.add_argument(
+        "--max-marker-site-export-frames",
+        type=int,
+        default=500,
+        help=(
+            "Safety cap for --export-marker-sites-mjcf. Refuse to export marker sites from windows with more than "
+            "this many loaded frames unless --allow-dynamic-marker-site-export is passed. <=0 disables the cap."
+        ),
+    )
+    parser.add_argument(
+        "--allow-dynamic-marker-site-export",
+        action="store_true",
+        help=(
+            "Allow --export-marker-sites-mjcf on long/dynamic windows. This is usually wrong for fixed mocap sites; "
+            "prefer a static/neutral calibration window so the frozen sites do not encode gait-phase soft-tissue motion."
         ),
     )
     parser.add_argument(
@@ -739,6 +761,22 @@ def _write_marker_sites_mjcf(
     print(f"Wrote {len(written)} calibrated marker sites to {output_xml}")
     for item in written:
         print(f"  {item}")
+
+
+def _validate_marker_site_export_window(args, num_frames: int) -> None:
+    if args.export_marker_sites_mjcf is None or args.allow_dynamic_marker_site_export:
+        return
+    max_frames = int(args.max_marker_site_export_frames)
+    if max_frames <= 0 or num_frames <= max_frames:
+        return
+    raise SystemExit(
+        "ERROR: Refusing to export fixed marker sites from a long/dynamic window "
+        f"({num_frames} loaded frames > --max-marker-site-export-frames={max_frames}). "
+        "Bake marker sites from a static/neutral calibration window instead, e.g. use --start-frame/--end-frame "
+        "or --max-frames to select the standing frames, then retarget the dynamic trial with "
+        "--asset-mjcf <exported.xml> --marker-offset-source site. Pass --allow-dynamic-marker-site-export only "
+        "if you intentionally want trial-average dynamic marker sites."
+    )
 
 
 def _build_marker_set(
@@ -1680,6 +1718,11 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         "marker_weight": args.marker_weight,
         "foot_marker_weight": args.foot_marker_weight,
     }
+    if args.export_marker_sites_mjcf is not None:
+        report["export_marker_sites_mjcf"] = str(args.export_marker_sites_mjcf)
+        report["marker_site_export_frames"] = getattr(args, "_marker_site_export_frames", None)
+        report["max_marker_site_export_frames"] = args.max_marker_site_export_frames
+        report["allow_dynamic_marker_site_export"] = args.allow_dynamic_marker_site_export
     if hasattr(args, "_treadmill_mapping"):
         report["treadmill_mapping"] = args._treadmill_mapping
     if hasattr(args, "_timing"):
@@ -1806,6 +1849,8 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
     data, output_fps = _load_window(args.c3d, args.start_frame, args.end_frame, args.output_fps, args.max_frames)
+    args._marker_site_export_frames = int(data.markers.shape[0])
+    _validate_marker_site_export_window(args, args._marker_site_export_frames)
     resolved_marker_set, marker_body_map = _resolve_marker_body_map(data, args.marker_set)
     args._resolved_marker_set = resolved_marker_set
     print(f"Marker set: {resolved_marker_set} ({len(marker_body_map)} configured markers)")

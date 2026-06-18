@@ -113,6 +113,54 @@ Writes a ProtoMotions `.motion` into `retargeted/proto/`.
     --backend newton --newton-iterations 60
 ```
 
+### Fixed-site marker workflow
+
+For marker overlays that should line up with the mesh, use fixed MJCF `mocap_*`
+sites: first bake the sites from a **static/neutral** calibration window, then
+retarget the dynamic trial with `--marker-offset-source site`. Do **not** bake
+sites from a full dynamic gait trial: the resulting trial-average sites encode
+soft-tissue motion and can bias the model toward bent knees.
+
+For S081, Cal 101 does not contain the thigh/shank cluster markers, so use the
+static standing frames at the start of Trial 101 to bake the s081-clusters sites:
+
+```bash
+.venv/bin/python data/biomechanics_retargeting/scripts/ik_retarget_c3d_to_ms_human_lower.py \
+    "c3dproto/Trial 101.v3d.c3d" \
+    --robot-name ms_human_lower_s081 \
+    --marker-set s081-clusters \
+    --marker-offset-source calibrated \
+    --offset-refine-passes 40 \
+    --allow-calibrated-offset-refine \
+    --max-frames 300 \
+    --newton-iterations 160 \
+    --export-marker-sites-mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081-LowerOnly-Trial101Sites.xml \
+    --output data/biomechanics_retargeting/retargeted/proto/S081_trial101_static_site_bake.motion \
+    --report data/biomechanics_retargeting/retargeted/S081_trial101_static_site_bake.rms.json \
+    --no-joint-angle-plots
+```
+
+Then retarget the full dynamic trial against those fixed static sites:
+
+```bash
+.venv/bin/python data/biomechanics_retargeting/scripts/ik_retarget_c3d_to_ms_human_lower.py \
+    "c3dproto/Trial 101.v3d.c3d" \
+    --robot-name ms_human_lower_s081 \
+    --marker-set s081-clusters \
+    --marker-offset-source site \
+    --asset-mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081-LowerOnly-Trial101Sites.xml \
+    --max-frames 0 \
+    --newton-iterations 160 \
+    --output data/biomechanics_retargeting/retargeted/proto/S081_trial101_marker_newton_site.motion \
+    --report data/biomechanics_retargeting/retargeted/S081_trial101_marker_newton_site.rms.json
+```
+
+`ik_retarget_c3d_to_ms_human_lower.py` refuses to export marker sites from
+windows longer than 500 loaded frames by default. Use `--max-frames`,
+`--start-frame`, or `--end-frame` to select a static calibration window; pass
+`--allow-dynamic-marker-site-export` only when dynamic-window site baking is
+intentional.
+
 Quick Visual3D joint-angle baseline (no IK, useful warm start / sanity check):
 
 ```bash
