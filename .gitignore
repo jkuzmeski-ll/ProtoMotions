@@ -23,6 +23,7 @@ data/amass/*.pkl
 !.claude/commands/
 .cursor/
 renders/
+.venv_newton/
 
 # Large c3d motion capture source files (too big for GitHub)
 *.c3d
