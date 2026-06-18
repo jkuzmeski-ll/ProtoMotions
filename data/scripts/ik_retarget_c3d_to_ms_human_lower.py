@@ -63,7 +63,7 @@ from retarget_c3d_to_ms_human_lower import (  # noqa: E402
 )
 
 
-MARKER_BODY_MAP: dict[str, str] = {
+LEGACY_MARKER_BODY_MAP: dict[str, str] = {
     # Pelvis landmarks.
     "RASI": "pelvis",
     "LASI": "pelvis",
@@ -87,7 +87,88 @@ MARKER_BODY_MAP: dict[str, str] = {
     "LTOE": "toes_l",
 }
 
-FOOT_MARKERS = {"RHEE", "LHEE", "RTOE", "LTOE"}
+S081_CLUSTER_MARKER_BODY_MAP: dict[str, str] = {
+    # Pelvis rigid cluster: ASIS/PSIS plus iliac-crest markers.
+    "RASI": "pelvis",
+    "LASI": "pelvis",
+    "RPSI": "pelvis",
+    "LPSI": "pelvis",
+    "RIC": "pelvis",
+    "LIC": "pelvis",
+    # Thigh rigid tracking clusters.
+    "RTHI": "femur_r",
+    "RTH2": "femur_r",
+    "RTH3": "femur_r",
+    "RTH4": "femur_r",
+    "LTHI": "femur_l",
+    "LTH2": "femur_l",
+    "LTH3": "femur_l",
+    "LTH4": "femur_l",
+    # Shank rigid tracking clusters.
+    "RTIB": "tibia_r",
+    "RTIB2": "tibia_r",
+    "RTIB3": "tibia_r",
+    "RTIB4": "tibia_r",
+    "LTIB": "tibia_l",
+    "LTIB2": "tibia_l",
+    "LTIB3": "tibia_l",
+    "LTIB4": "tibia_l",
+    # Rearfoot heel clusters.
+    "RHEE": "calcn_r",
+    "RHEE2": "calcn_r",
+    "RHEE3": "calcn_r",
+    "LHEE": "calcn_l",
+    "LHEE2": "calcn_l",
+    "LHEE3": "calcn_l",
+    # Toe segment from toe/hallux/metatarsal markers.
+    "RTOE": "toes_r",
+    "RHLX": "toes_r",
+    "RMTH1": "toes_r",
+    "RMTH5": "toes_r",
+    "LTOE": "toes_l",
+    "LHLX": "toes_l",
+    "LMTH1": "toes_l",
+    "LMTH5": "toes_l",
+}
+
+S081_CLUSTER_DETECT_MARKERS = {"RTH2", "RTH3", "RTH4", "RTIB2", "RTIB3", "RTIB4", "RHEE2", "RHEE3", "RMTH1", "RMTH5"}
+
+FOOT_MARKERS = {
+    "RHEE",
+    "RHEE2",
+    "RHEE3",
+    "LHEE",
+    "LHEE2",
+    "LHEE3",
+    "RTOE",
+    "RHLX",
+    "RMTH1",
+    "RMTH5",
+    "LTOE",
+    "LHLX",
+    "LMTH1",
+    "LMTH5",
+}
+
+
+def _parse_vec(text: str | None) -> np.ndarray:
+    if text is None or not text.strip():
+        return np.zeros(3, dtype=np.float64)
+    return np.array([float(value) for value in text.split()], dtype=np.float64)
+
+
+def _quat_wxyz_to_matrix(quat: np.ndarray) -> np.ndarray:
+    quat = quat.astype(np.float64)
+    quat = quat / np.clip(np.linalg.norm(quat), 1e-8, None)
+    w, x, y, z = quat.tolist()
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
 
 
 def _v3d_points_to_model(points: np.ndarray) -> np.ndarray:
@@ -216,6 +297,15 @@ def parse_args() -> argparse.Namespace:
         help="Newton IK weight for heel/toe markers. Higher values prioritize contact-body marker accuracy.",
     )
     parser.add_argument(
+        "--marker-set",
+        choices=["auto", "legacy", "s081-clusters"],
+        default="auto",
+        help=(
+            "Marker-to-body constraint set. 'auto' uses the S081 rigid cluster set when thigh/shank/heel/toe "
+            "cluster markers are present; otherwise it uses the legacy anatomical marker set."
+        ),
+    )
+    parser.add_argument(
         "--marker-offset-source",
         choices=["calibrated", "site", "site-or-calibrated"],
         default="calibrated",
@@ -289,9 +379,27 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _treadmill_position_labels(data) -> list[str]:
+def _has_marker(data, label: str) -> bool:
+    try:
+        marker_index(data.marker_labels, label)
+    except KeyError:
+        return False
+    return True
+
+
+def _resolve_marker_body_map(data, marker_set: str) -> tuple[str, dict[str, str]]:
+    if marker_set == "legacy":
+        return "legacy", LEGACY_MARKER_BODY_MAP
+    if marker_set == "s081-clusters":
+        return "s081-clusters", S081_CLUSTER_MARKER_BODY_MAP
+    if any(_has_marker(data, label) for label in S081_CLUSTER_DETECT_MARKERS):
+        return "s081-clusters", S081_CLUSTER_MARKER_BODY_MAP
+    return "legacy", LEGACY_MARKER_BODY_MAP
+
+
+def _treadmill_position_labels(data, marker_body_map: dict[str, str]) -> list[str]:
     labels = set(PELVIS_MARKERS)
-    labels.update(MARKER_BODY_MAP.keys())
+    labels.update(marker_body_map.keys())
 
     present = []
     for label in sorted(labels):
@@ -303,7 +411,7 @@ def _treadmill_position_labels(data) -> list[str]:
     return present
 
 
-def _apply_treadmill_overground_if_requested(data, output_fps: int, args) -> None:
+def _apply_treadmill_overground_if_requested(data, output_fps: int, args, marker_body_map: dict[str, str]) -> None:
     if not args.treadmill_overground:
         return
 
@@ -356,7 +464,7 @@ def _apply_treadmill_overground_if_requested(data, output_fps: int, args) -> Non
         if event_stance_mask is not None:
             speed_source = "stance-estimate-with-c3d-contact-events"
 
-    position_labels = _treadmill_position_labels(data)
+    position_labels = _treadmill_position_labels(data, marker_body_map)
     if not position_labels:
         raise ValueError("No positional marker/segment labels found for treadmill-overground mapping.")
     marker_indices = [marker_index(data.marker_labels, label) for label in position_labels]
@@ -393,16 +501,93 @@ def _apply_treadmill_overground_if_requested(data, output_fps: int, args) -> Non
 
 def _normalized_marker_positions(data) -> np.ndarray:
     """Return markers in meters in the model frame, origin-normalized in XY."""
+    return _normalized_marker_positions_with_root_anchor(data, root_local_marker_centroid=None)
+
+
+def _normalized_marker_positions_with_root_anchor(
+    data,
+    root_local_marker_centroid: np.ndarray | None,
+    pelvis_markers: list[str] | None = None,
+) -> np.ndarray:
     scale = _unit_scale(data)
     markers = _v3d_points_to_model(data.markers.astype(np.float32) * scale)
-    pelvis = _v3d_points_to_model(np.stack([_point(data, name) for name in PELVIS_MARKERS], axis=0).astype(np.float32) * scale)
-    root = np.nanmean(pelvis, axis=0)
+    root = _extract_model_root_positions_np(data, root_local_marker_centroid, normalize_xy=False, pelvis_markers=pelvis_markers)
     markers[:, :, :2] -= root[0:1, None, :2]
     return markers
 
 
+def _pelvis_marker_positions_model(data, pelvis_markers: list[str] | None = None) -> np.ndarray:
+    scale = _unit_scale(data)
+    labels = PELVIS_MARKERS if pelvis_markers is None else pelvis_markers
+    pelvis = np.stack([_point(data, name) for name in labels], axis=1).astype(np.float32) * scale
+    return _v3d_points_to_model(pelvis)
+
+
+def _pelvis_root_rotation_matrices_np(data) -> np.ndarray:
+    pelvis = _pelvis_marker_positions_model(data).astype(np.float64)
+    rasi, lasi, rpsi, lpsi = [pelvis[:, idx] for idx in range(4)]
+    x_axis_hint = 0.5 * (rasi + lasi) - 0.5 * (rpsi + lpsi)
+    y_axis = lasi - rasi
+    x_axis_hint /= np.clip(np.linalg.norm(x_axis_hint, axis=-1, keepdims=True), 1e-8, None)
+    y_axis /= np.clip(np.linalg.norm(y_axis, axis=-1, keepdims=True), 1e-8, None)
+    z_axis = np.cross(x_axis_hint, y_axis)
+    z_axis /= np.clip(np.linalg.norm(z_axis, axis=-1, keepdims=True), 1e-8, None)
+    x_axis = np.cross(y_axis, z_axis)
+    x_axis /= np.clip(np.linalg.norm(x_axis, axis=-1, keepdims=True), 1e-8, None)
+    return np.stack([x_axis, y_axis, z_axis], axis=-1).astype(np.float32)
+
+
+def _extract_model_root_positions_np(
+    data,
+    root_local_marker_centroid: np.ndarray | None,
+    normalize_xy: bool = True,
+    pelvis_markers: list[str] | None = None,
+) -> np.ndarray:
+    pelvis = _pelvis_marker_positions_model(data, pelvis_markers)
+    marker_centroid = np.nanmean(pelvis, axis=1).astype(np.float32)
+    root = marker_centroid
+    if root_local_marker_centroid is not None:
+        root_rot = _pelvis_root_rotation_matrices_np(data)
+        root = marker_centroid - np.einsum("fij,j->fi", root_rot, root_local_marker_centroid).astype(np.float32)
+    if normalize_xy:
+        root[:, :2] -= root[0:1, :2]
+    return root
+
+
 def _asset_xml_path(cfg) -> Path:
     return Path(cfg.asset.asset_root) / cfg.asset.asset_file_name
+
+
+def _root_local_pelvis_marker_centroid_from_sites(cfg, site_prefix: str, pelvis_markers: list[str]) -> np.ndarray | None:
+    """Infer the model root anchor from pelvis marker sites in the MJCF."""
+    xml_path = _asset_xml_path(cfg)
+    try:
+        root = ET.parse(xml_path).getroot()
+    except (ET.ParseError, OSError) as exc:
+        print(f"[WARN] Could not read MJCF marker sites from {xml_path}: {exc}; using raw pelvis marker centroid")
+        return None
+
+    pelvis_body = next((body for body in root.iter("body") if body.get("name") == "pelvis"), None)
+    if pelvis_body is None:
+        return None
+    site_positions: list[np.ndarray] = []
+    for label in pelvis_markers:
+        candidates = _marker_site_name_candidates(label, site_prefix)
+        site = None
+        for candidate in candidates:
+            site = pelvis_body.find(f"site[@name='{candidate}']")
+            if site is not None:
+                break
+        if site is None:
+            return None
+        site_positions.append(_parse_vec(site.get("pos")))
+    pelvis_local_centroid = np.nanmean(np.stack(site_positions, axis=0), axis=0)
+    pelvis_pos = _parse_vec(pelvis_body.get("pos"))
+    pelvis_quat = _parse_vec(pelvis_body.get("quat"))
+    if pelvis_quat.shape[0] != 4 or not np.any(pelvis_quat):
+        pelvis_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    pelvis_rot = _quat_wxyz_to_matrix(pelvis_quat)
+    return (pelvis_pos + pelvis_rot @ pelvis_local_centroid).astype(np.float32)
 
 
 def _parse_site_pos(site: ET.Element) -> tuple[float, float, float]:
@@ -421,12 +606,12 @@ def _marker_site_name_candidates(marker_label: str, site_prefix: str) -> list[st
     return candidates
 
 
-def _load_marker_sites(cfg, site_prefix: str) -> dict[str, MarkerSite]:
+def _load_marker_sites(cfg, site_prefix: str, marker_body_map: dict[str, str]) -> dict[str, MarkerSite]:
     xml_path = _asset_xml_path(cfg)
     root = ET.parse(xml_path).getroot()
     candidate_to_label = {
         candidate: label
-        for label in MARKER_BODY_MAP
+        for label in marker_body_map
         for candidate in _marker_site_name_candidates(label, site_prefix)
     }
     marker_sites: dict[str, MarkerSite] = {}
@@ -516,17 +701,20 @@ def _build_marker_set(
     data,
     body_names: list[str],
     device: torch.device,
+    marker_body_map: dict[str, str],
     marker_sites: dict[str, MarkerSite] | None = None,
     prefer_site_bodies: bool = False,
+    root_local_marker_centroid: np.ndarray | None = None,
+    pelvis_markers: list[str] | None = None,
 ) -> MarkerSet:
     body_index = {name: idx for idx, name in enumerate(body_names)}
-    marker_positions = _normalized_marker_positions(data)
+    marker_positions = _normalized_marker_positions_with_root_anchor(data, root_local_marker_centroid, pelvis_markers)
 
     labels: list[str] = []
     bodies: list[int] = []
     targets: list[np.ndarray] = []
     skipped: list[str] = []
-    for marker_label, mapped_body_name in MARKER_BODY_MAP.items():
+    for marker_label, mapped_body_name in marker_body_map.items():
         marker_site = marker_sites.get(marker_label) if marker_sites is not None else None
         body_name = marker_site.body_name if prefer_site_bodies and marker_site is not None else mapped_body_name
         if body_name not in body_index:
@@ -565,6 +753,7 @@ def _apply_marker_site_offsets(
     calibrated_offsets: torch.Tensor,
     marker_sites: dict[str, MarkerSite],
     offset_source: str,
+    allow_missing_sites: bool = False,
 ) -> torch.Tensor:
     if offset_source == "calibrated":
         return calibrated_offsets
@@ -584,7 +773,7 @@ def _apply_marker_site_offsets(
         )
         used.append(f"{label}:{marker_site.site_name}->{marker_site.body_name}")
 
-    if offset_source == "site" and missing:
+    if offset_source == "site" and missing and not allow_missing_sites:
         raise ValueError(
             "--marker-offset-source=site requires MJCF <site> definitions for every used marker. Missing: "
             + ", ".join(missing)
@@ -597,7 +786,7 @@ def _apply_marker_site_offsets(
     )
     if used:
         print(f"MJCF marker sites: {', '.join(used)}")
-    if missing and offset_source == "site-or-calibrated":
+    if missing and offset_source in {"site", "site-or-calibrated"}:
         print(f"Calibrated marker offsets: {', '.join(missing)}")
     return local_offsets
 
@@ -627,11 +816,8 @@ def _extract_root_rotations(data, device: torch.device, mode: str) -> torch.Tens
     return matrix_to_quaternion(root_rot_mat, w_last=False)
 
 
-def _extract_model_root_positions(data) -> torch.Tensor:
-    scale = _unit_scale(data)
-    pelvis = _v3d_points_to_model(np.stack([_point(data, name) for name in PELVIS_MARKERS], axis=0).astype(np.float32) * scale)
-    root = np.nanmean(pelvis, axis=0).astype(np.float32)
-    root[:, :2] -= root[0:1, :2]
+def _extract_model_root_positions(data, root_local_marker_centroid: np.ndarray | None, pelvis_markers: list[str] | None) -> torch.Tensor:
+    root = _extract_model_root_positions_np(data, root_local_marker_centroid, pelvis_markers=pelvis_markers)
     return torch.from_numpy(root)
 
 
@@ -646,15 +832,27 @@ def _canonicalize_dof_angles(dof_pos: torch.Tensor, mode: str) -> torch.Tensor:
     raise ValueError(f"Unsupported warm-start angle mode: {mode}")
 
 
-def _initial_qpos(data, ki, device: torch.device, root_orientation: str, angle_mode: str, clamp_limits: bool) -> torch.Tensor:
-    dof_pos = extract_joint_angles(data, ki.dof_names).to(device=device, dtype=torch.float32)
-    dof_pos = _canonicalize_dof_angles(dof_pos, angle_mode)
+def _initial_qpos(
+    data,
+    ki,
+    device: torch.device,
+    root_orientation: str,
+    angle_mode: str,
+    clamp_limits: bool,
+    root_local_marker_centroid: np.ndarray | None,
+    pelvis_markers: list[str] | None,
+) -> torch.Tensor:
+    if angle_mode == "zero":
+        dof_pos = torch.zeros(data.markers.shape[0], len(ki.dof_names), device=device, dtype=torch.float32)
+    else:
+        dof_pos = extract_joint_angles(data, ki.dof_names).to(device=device, dtype=torch.float32)
+        dof_pos = _canonicalize_dof_angles(dof_pos, angle_mode)
     if clamp_limits:
         limits_lower = ki.dof_limits_lower.to(device=device, dtype=torch.float32)
         limits_upper = ki.dof_limits_upper.to(device=device, dtype=torch.float32)
         dof_pos = torch.max(torch.min(dof_pos, limits_upper), limits_lower)
 
-    root_pos = _extract_model_root_positions(data).to(device=device, dtype=torch.float32)
+    root_pos = _extract_model_root_positions(data, root_local_marker_centroid, pelvis_markers).to(device=device, dtype=torch.float32)
     root_rot_wxyz = _extract_root_rotations(data, device, root_orientation)
     return torch.cat([root_pos, root_rot_wxyz, dof_pos], dim=-1)
 
@@ -1351,6 +1549,7 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         "offset_calibration": args.offset_calibration,
         "offset_refine_passes": args.offset_refine_passes,
         "root_orientation": args.root_orientation,
+        "marker_set": getattr(args, "_resolved_marker_set", args.marker_set),
         "marker_weight": args.marker_weight,
         "foot_marker_weight": args.foot_marker_weight,
     }
@@ -1363,6 +1562,8 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         report["total_ik_elapsed_seconds"] = sum(item["elapsed_seconds"] for item in args._timing_history)
     if hasattr(args, "_joint_angle_plot_paths"):
         report["joint_angle_plots"] = [str(path) for path in args._joint_angle_plot_paths]
+    if hasattr(args, "_root_anchor"):
+        report["root_anchor"] = args._root_anchor
     report["marker_offset_source"] = args.marker_offset_source
     report["marker_site_prefix"] = args.marker_site_prefix
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1476,21 +1677,59 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
     data, output_fps = _load_window(args.c3d, args.start_frame, args.end_frame, args.output_fps, args.max_frames)
-    _apply_treadmill_overground_if_requested(data, output_fps, args)
+    resolved_marker_set, marker_body_map = _resolve_marker_body_map(data, args.marker_set)
+    args._resolved_marker_set = resolved_marker_set
+    print(f"Marker set: {resolved_marker_set} ({len(marker_body_map)} configured markers)")
+    _apply_treadmill_overground_if_requested(data, output_fps, args, marker_body_map)
     cfg = robot_config(args.robot_name)
     ki = cfg.kinematic_info
+    pelvis_markers = [label for label, body_name in marker_body_map.items() if body_name == "pelvis" and _has_marker(data, label)]
+    if not pelvis_markers:
+        pelvis_markers = PELVIS_MARKERS
+    root_local_marker_centroid = _root_local_pelvis_marker_centroid_from_sites(cfg, args.marker_site_prefix, pelvis_markers)
+    if root_local_marker_centroid is not None:
+        args._root_anchor = {
+            "source": "mjcf_pelvis_marker_site_centroid",
+            "pelvis_markers": pelvis_markers,
+            "root_local_marker_centroid": root_local_marker_centroid.tolist(),
+        }
+        print(
+            "Root anchor: using MJCF pelvis marker-site centroid "
+            f"{root_local_marker_centroid.tolist()} in root frame from {pelvis_markers}"
+        )
+    else:
+        args._root_anchor = {"source": "raw_pelvis_marker_centroid", "pelvis_markers": pelvis_markers}
+        print(f"Root anchor: using raw pelvis marker centroid from {pelvis_markers}")
 
-    qpos_init = _initial_qpos(data, ki, device, args.root_orientation, args.warmstart_angle_mode, args.warmstart_clamp_limits)
-    marker_sites = _load_marker_sites(cfg, args.marker_site_prefix) if args.marker_offset_source != "calibrated" else {}
+    qpos_init = _initial_qpos(
+        data,
+        ki,
+        device,
+        args.root_orientation,
+        args.warmstart_angle_mode,
+        args.warmstart_clamp_limits,
+        root_local_marker_centroid,
+        pelvis_markers,
+    )
+    marker_sites = _load_marker_sites(cfg, args.marker_site_prefix, marker_body_map) if args.marker_offset_source != "calibrated" else {}
     marker_set = _build_marker_set(
         data,
         ki.body_names,
         device,
+        marker_body_map,
         marker_sites=marker_sites,
         prefer_site_bodies=args.marker_offset_source != "calibrated",
+        root_local_marker_centroid=root_local_marker_centroid,
+        pelvis_markers=pelvis_markers,
     )
     calibrated_offsets = _calibrate_local_offsets(ki, qpos_init, marker_set, args.calibration_frame, args.offset_calibration)
-    local_offsets = _apply_marker_site_offsets(marker_set, calibrated_offsets, marker_sites, args.marker_offset_source)
+    local_offsets = _apply_marker_site_offsets(
+        marker_set,
+        calibrated_offsets,
+        marker_sites,
+        args.marker_offset_source,
+        allow_missing_sites=resolved_marker_set == "s081-clusters",
+    )
     print(
         f"Optimizing {qpos_init.shape[0]} frames at {output_fps} fps on {device} with {args.backend}; "
         f"nq={qpos_init.shape[1]} bodies={ki.num_bodies} markers={len(marker_set.labels)}"
@@ -1519,7 +1758,13 @@ def main() -> None:
         else:
             calibrated_offsets = context_offsets
             use_context_output_as_input = True
-        local_offsets = _apply_marker_site_offsets(marker_set, calibrated_offsets, marker_sites, args.marker_offset_source)
+        local_offsets = _apply_marker_site_offsets(
+            marker_set,
+            calibrated_offsets,
+            marker_sites,
+            args.marker_offset_source,
+            allow_missing_sites=resolved_marker_set == "s081-clusters",
+        )
         print(f"Refining marker offsets from solved qpos: pass {refine_pass + 1}/{args.offset_refine_passes}")
         qpos = _optimize_qpos_newton(
             args,

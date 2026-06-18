@@ -19,6 +19,7 @@ protomotions/data/assets/mjcf/ms_human_700/*
 !protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S003-LowerOnly.xml
 data/ms_human_700/*
 data/amass/*.pkl
+c3dproto/
 .claude/*
 !.claude/commands/
 .cursor/

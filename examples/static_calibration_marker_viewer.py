@@ -27,6 +27,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Any
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -111,6 +112,55 @@ from scale_ms_human_to_subject import load_marker_config, _resolve_point  # noqa
 PELVIS_MARKERS = ("RASI", "LASI", "RPSI", "LPSI")
 
 
+def _parse_vec(text: str | None) -> np.ndarray:
+    if text is None or not text.strip():
+        return np.zeros(3, dtype=np.float64)
+    return np.array([float(value) for value in text.split()], dtype=np.float64)
+
+
+def _quat_wxyz_to_matrix(quat: np.ndarray) -> np.ndarray:
+    quat = quat.astype(np.float64)
+    quat = quat / np.clip(np.linalg.norm(quat), 1e-8, None)
+    w, x, y, z = quat.tolist()
+    return np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _pelvis_marker_centroid_in_root_frame(robot_cfg) -> np.ndarray | None:
+    """Return the local root-to-pelvis-marker-centroid offset from MJCF sites."""
+    xml_path = Path(robot_cfg.asset.asset_root) / robot_cfg.asset.asset_file_name
+    try:
+        root = ET.parse(xml_path).getroot()
+    except (ET.ParseError, OSError) as exc:
+        print(f"[WARN] Could not read MJCF marker sites from {xml_path}: {exc}; using raw pelvis marker centroid")
+        return None
+
+    pelvis_body = next((body for body in root.iter("body") if body.get("name") == "pelvis"), None)
+    if pelvis_body is None:
+        return None
+    site_positions = []
+    for label in PELVIS_MARKERS:
+        site = pelvis_body.find(f"site[@name='mocap_{label}']")
+        if site is None:
+            site = pelvis_body.find(f"site[@name='{label}']")
+        if site is None:
+            return None
+        site_positions.append(_parse_vec(site.get("pos")))
+    pelvis_local_centroid = np.nanmean(np.stack(site_positions, axis=0), axis=0)
+    pelvis_pos = _parse_vec(pelvis_body.get("pos"))
+    pelvis_quat = _parse_vec(pelvis_body.get("quat"))
+    if pelvis_quat.shape[0] != 4 or not np.any(pelvis_quat):
+        pelvis_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    pelvis_rot = _quat_wxyz_to_matrix(pelvis_quat)
+    return (pelvis_pos + pelvis_rot @ pelvis_local_centroid).astype(np.float32)
+
+
 def _unit_scale(data) -> float:
     return 0.001 if data.point_units.lower() in {"mm", "millimeter", "millimeters"} else 1.0
 
@@ -179,11 +229,15 @@ def _derived_point_positions(data, marker_config: dict[str, Any]) -> tuple[list[
     return names, _v3d_points_to_model(np.stack(points, axis=0))
 
 
-def _root_pose_from_pelvis(data, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def _root_pose_from_pelvis(
+    data,
+    device: torch.device,
+    root_local_marker_centroid: np.ndarray | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
     scale = _unit_scale(data)
     pelvis = np.stack([_marker_mean(data, name, scale) for name in PELVIS_MARKERS], axis=0)
     pelvis = _v3d_points_to_model(pelvis.astype(np.float32))
-    root_pos = torch.tensor(np.nanmean(pelvis, axis=0), device=device, dtype=torch.float32)
+    marker_centroid = torch.tensor(np.nanmean(pelvis, axis=0), device=device, dtype=torch.float32)
 
     rasi, lasi, rpsi, lpsi = [torch.tensor(p, device=device, dtype=torch.float32) for p in pelvis]
     x_axis_hint = 0.5 * (rasi + lasi) - 0.5 * (rpsi + lpsi)
@@ -196,6 +250,10 @@ def _root_pose_from_pelvis(data, device: torch.device) -> tuple[torch.Tensor, to
     x_axis = x_axis / torch.linalg.norm(x_axis).clamp_min(1e-8)
     rot_mat = torch.stack([x_axis, y_axis, z_axis], dim=-1).unsqueeze(0)
     root_rot = matrix_to_quaternion(rot_mat, w_last=True)[0]
+    root_pos = marker_centroid
+    if root_local_marker_centroid is not None:
+        local_offset = torch.tensor(root_local_marker_centroid, device=device, dtype=torch.float32)
+        root_pos = marker_centroid - rot_mat[0] @ local_offset
     return root_pos, root_rot
 
 
@@ -223,6 +281,7 @@ class StaticCalibrationMarkerViewer:
         self.robot_cfg.asset.disable_gravity = True
         self.robot_cfg.asset.fix_base_link = False
         self.robot_cfg.asset.self_collisions = False
+        self.root_local_marker_centroid = _pelvis_marker_centroid_in_root_frame(self.robot_cfg)
 
         self.simulator_cfg = simulator_config(
             args.simulator,
@@ -281,7 +340,7 @@ class StaticCalibrationMarkerViewer:
         return configs
 
     def _reset_robot_to_static_pelvis(self) -> None:
-        root_pos, root_rot = _root_pose_from_pelvis(self.data, self.device)
+        root_pos, root_rot = _root_pose_from_pelvis(self.data, self.device, self.root_local_marker_centroid)
         current_state = self.simulator.get_robot_state()
         current_state.dof_pos = torch.zeros_like(current_state.dof_pos)
         current_state.dof_vel = torch.zeros_like(current_state.dof_vel)
@@ -321,6 +380,13 @@ class StaticCalibrationMarkerViewer:
         print(f"Static frames: {self.static_start}-{self.static_end}")
         print(f"Robot: {args.robot_name}")
         print(f"Asset: {self.robot_cfg.asset.asset_file_name}")
+        if self.root_local_marker_centroid is not None:
+            print(
+                "Root anchor: MJCF pelvis marker-site centroid "
+                f"{self.root_local_marker_centroid.tolist()} in root frame"
+            )
+        else:
+            print("Root anchor: raw static pelvis marker centroid")
         print(f"Markers shown: {len(self.marker_labels)} blue C3D markers")
         print(f"Contact bodies shown: {', '.join(self.robot_cfg.contact_bodies)} red spheres")
         if self.derived_names:
