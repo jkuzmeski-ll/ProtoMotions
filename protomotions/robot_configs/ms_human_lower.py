@@ -36,7 +36,7 @@ class MSHumanLowerRobotConfig(RobotConfig):
     """Simplified MS-Human-700 locomotion skeleton.
 
     The MJCF referenced here is generated locally from a user-provided
-    MS-Human-700 checkout by data/scripts/convert_ms_human_lowerbody_to_proto.py.
+    MS-Human-700 checkout by data/biomechanics_retargeting/scripts/convert_ms_human_lowerbody_to_proto.py.
     It keeps the lower-body skeleton and simple upper torso, removes muscles and
     tendons, replaces the original 6-DOF pelvis sliders with a free root, and
     simplifies each knee to one hinge joint.

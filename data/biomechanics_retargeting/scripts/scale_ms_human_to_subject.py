@@ -32,17 +32,22 @@ import json
 import math
 from pathlib import Path
 import shutil
+import sys
 import xml.etree.ElementTree as ET
 from typing import Any
 
 import numpy as np
 
-from protomotions.utils.c3d_io import load_c3d, marker_index, read_metadata
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
+
+from utils.c3d_io import load_c3d, marker_index, read_metadata  # noqa: E402
 
 
 BASE_XML = Path("protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-Simple.xml")
 DEFAULT_OUTPUT_XML = Path("protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S003.xml")
-DEFAULT_REPORT = Path("data/ms-human-lower-retargeted/S003_scaling_report.json")
+DEFAULT_REPORT = Path("data/biomechanics_retargeting/retargeted/S003_scaling_report.json")
 DEFAULT_OUTPUT_XML_TEMPLATE = "MS-Human-700-Locomotion-{subject_id}.xml"
 DEFAULT_REPORT_TEMPLATE = "{subject_id}_scaling_report.json"
 

@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data/ms-human-lower-retargeted/proto"),
+        default=Path("data/biomechanics_retargeting/retargeted/proto"),
         help="Directory where MS-Human lower-body .motion files will be saved.",
     )
     parser.add_argument("--force", action="store_true", help="Overwrite outputs.")

@@ -31,7 +31,7 @@ Hotkeys:
     h           Print help
 
 Example:
-    python data/scripts/edit_mjcf_marker_sites.py \
+    python data/biomechanics_retargeting/scripts/edit_mjcf_marker_sites.py \
         --mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S003-LowerOnly.xml
 """
 

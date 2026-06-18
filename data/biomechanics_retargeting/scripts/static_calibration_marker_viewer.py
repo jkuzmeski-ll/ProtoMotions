@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--marker-config",
         type=Path,
-        default=Path("data/yaml_files/ms_human_700_cal101_marker_scaling_config.json"),
+        default=Path("data/biomechanics_retargeting/configs/ms_human_700_cal101_marker_scaling_config.json"),
         help="Marker scaling config whose derived points should also be visualized.",
     )
     parser.add_argument(
@@ -101,13 +101,14 @@ from protomotions.simulator.base_simulator.config import (  # noqa: E402
     VisualizationMarkerConfig,
 )
 from protomotions.simulator.factory import simulator_config  # noqa: E402
-from protomotions.utils.c3d_io import load_c3d, marker_index  # noqa: E402
 from protomotions.utils.hydra_replacement import get_class  # noqa: E402
 from protomotions.utils.rotations import matrix_to_quaternion  # noqa: E402
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "data" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR.parent))
 from scale_ms_human_to_subject import load_marker_config, _resolve_point  # noqa: E402
+from utils.c3d_io import load_c3d, marker_index  # noqa: E402
 
 PELVIS_MARKERS = ("RASI", "LASI", "RPSI", "LPSI")
 

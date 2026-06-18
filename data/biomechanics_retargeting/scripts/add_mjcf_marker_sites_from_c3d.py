@@ -18,7 +18,7 @@ The scaler changes segment lengths, but it does not by itself add anatomical
 marker offsets.  This utility uses a static C3D window and a marker-site mapping
 from the marker config to create ``mocap_*`` MJCF ``site`` elements on the
 corresponding model bodies.  The resulting sites can be edited with
-``data/scripts/edit_mjcf_marker_sites.py`` and used by the IK retargeter with
+``data/biomechanics_retargeting/scripts/edit_mjcf_marker_sites.py`` and used by the IK retargeter with
 ``--marker-offset-source=site`` or ``site-or-calibrated``.
 """
 
@@ -33,16 +33,16 @@ import xml.etree.ElementTree as ET
 import mujoco
 import numpy as np
 
-from protomotions.utils.c3d_io import load_c3d, marker_index
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR.parent))
 from scale_ms_human_to_subject import _resolve_point, load_marker_config  # noqa: E402
+from utils.c3d_io import load_c3d, marker_index  # noqa: E402
 
 DEFAULT_MJCF = Path(
     "protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081-LowerOnly.xml"
 )
-DEFAULT_CONFIG = Path("data/yaml_files/ms_human_700_cal101_marker_scaling_config.json")
+DEFAULT_CONFIG = Path("data/biomechanics_retargeting/configs/ms_human_700_cal101_marker_scaling_config.json")
 PELVIS_MARKERS = ("RASI", "LASI", "RPSI", "LPSI")
 
 

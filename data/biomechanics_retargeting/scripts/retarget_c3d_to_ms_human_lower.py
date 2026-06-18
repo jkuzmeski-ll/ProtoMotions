@@ -24,10 +24,15 @@ warm start and compare against its marker-RMS optimization result.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
+
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
 
 from protomotions.components.pose_lib import (
     compute_cartesian_velocity,
@@ -36,7 +41,8 @@ from protomotions.components.pose_lib import (
 )
 from protomotions.robot_configs.factory import robot_config
 from protomotions.simulator.base_simulator.simulator_state import StateConversion
-from protomotions.utils.c3d_io import load_c3d, marker_index, read_metadata
+
+from utils.c3d_io import load_c3d, marker_index, read_metadata  # noqa: E402
 
 
 ANGLE_LABELS = {
@@ -74,7 +80,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("c3d", type=Path, help="Visual3D/Vicon C3D file.")
     parser.add_argument("--robot-name", default="ms_human_lower_s003", help="Scaled MS-Human robot config.")
-    parser.add_argument("--output", type=Path, default=Path("data/ms-human-lower-retargeted/proto/S003_v3d_angles.motion"))
+    parser.add_argument("--output", type=Path, default=Path("data/biomechanics_retargeting/retargeted/proto/S003_v3d_angles.motion"))
     parser.add_argument("--start-frame", type=int, default=1, help="First 1-based C3D frame to export.")
     parser.add_argument("--end-frame", type=int, default=None, help="Last 1-based C3D frame to export, inclusive.")
     parser.add_argument(

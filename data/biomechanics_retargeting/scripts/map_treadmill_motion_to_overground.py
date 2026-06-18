@@ -23,13 +23,19 @@ are translated into an overground trajectory.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
+
 from protomotions.robot_configs.factory import robot_config
-from protomotions.utils.c3d_io import events_from_metadata, read_metadata
-from protomotions.utils.treadmill_overground import (
+
+from utils.c3d_io import events_from_metadata, read_metadata  # noqa: E402
+from utils.treadmill_overground import (  # noqa: E402
     c3d_speed_profile_from_events,
     displacement_from_speed,
     displacement_from_speed_profile,

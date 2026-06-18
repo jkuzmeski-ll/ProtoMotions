@@ -21,7 +21,7 @@ position is converted back into the site's local body frame and written to MJCF
 when switching markers or pressing Save.
 
 Example:
-    python data/scripts/edit_mjcf_marker_sites_viser.py \
+    python data/biomechanics_retargeting/scripts/edit_mjcf_marker_sites_viser.py \
         --mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-Simple.xml \
         --site-prefix mocap_
 """

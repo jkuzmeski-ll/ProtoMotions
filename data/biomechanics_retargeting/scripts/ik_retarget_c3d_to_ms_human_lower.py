@@ -24,6 +24,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -35,6 +36,10 @@ import warp as wp
 from newton._src.sim.ik.ik_common import IKJacobianType
 from newton._src.sim.ik.ik_objectives import IKObjective
 
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+if str(_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PKG_ROOT))
+
 from protomotions.components.pose_lib import (
     compute_cartesian_velocity,
     compute_forward_kinematics_from_transforms,
@@ -43,9 +48,10 @@ from protomotions.components.pose_lib import (
 )
 from protomotions.robot_configs.factory import robot_config
 from protomotions.simulator.base_simulator.simulator_state import StateConversion
-from protomotions.utils.c3d_io import events_from_metadata, marker_index, read_metadata
 from protomotions.utils.rotations import matrix_to_quaternion
-from protomotions.utils.treadmill_overground import (
+
+from utils.c3d_io import events_from_metadata, marker_index, read_metadata  # noqa: E402
+from utils.treadmill_overground import (  # noqa: E402
     apply_virtual_origin_mapping,
     apply_virtual_origin_mapping_with_speed_profile,
     c3d_contact_mask_from_events,
@@ -249,7 +255,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/ms-human-lower-retargeted/proto/S003_marker_ik.motion"),
+        default=Path("data/biomechanics_retargeting/retargeted/proto/S003_marker_ik.motion"),
         help="Output ProtoMotions .motion path.",
     )
     parser.add_argument("--report", type=Path, default=None, help="Optional JSON marker-RMS report path.")
