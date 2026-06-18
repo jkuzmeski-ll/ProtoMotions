@@ -241,6 +241,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("c3d", type=Path, help="Visual3D/Vicon C3D file.")
     parser.add_argument("--robot-name", default="ms_human_lower_s003", help="Scaled MS-Human robot config.")
     parser.add_argument(
+        "--asset-mjcf",
+        type=Path,
+        default=None,
+        help="Optional MJCF asset override for IK/model loading. Useful for testing generated marker-site XMLs.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=Path("data/ms-human-lower-retargeted/proto/S003_marker_ik.motion"),
@@ -286,8 +292,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--joint-limit-weight",
         type=float,
-        default=0.0,
-        help="Newton IK joint-limit objective weight. Set >0 to discourage foot/ankle twists outside MJCF joint ranges.",
+        default=10.0,
+        help="Newton IK joint-limit objective weight. Set 0 to disable anatomical joint-limit regularization.",
     )
     parser.add_argument("--marker-weight", type=float, default=1.0)
     parser.add_argument(
@@ -336,6 +342,14 @@ def parse_args() -> argparse.Namespace:
         help="After the first Newton solve, recalibrate fixed marker offsets from solved qpos and solve this many extra passes.",
     )
     parser.add_argument(
+        "--allow-calibrated-offset-refine",
+        action="store_true",
+        help=(
+            "Permit --offset-refine-passes when marker offsets are calibrated from the trial. This can hide bad segment "
+            "poses by moving virtual markers on each body, so it is disabled by default."
+        ),
+    )
+    parser.add_argument(
         "--warmstart-angle-mode",
         choices=["raw", "closest-initial", "zero"],
         default="zero",
@@ -346,8 +360,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--warmstart-clamp-limits",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Clamp only the warm-start DOFs to robot limits before Newton IK.",
+    )
+    parser.add_argument(
+        "--dof-limit-tolerance",
+        type=float,
+        default=1e-4,
+        help="Tolerance in radians before solved DOF limit violations are reported.",
+    )
+    parser.add_argument(
+        "--fail-on-dof-limit-violation",
         action="store_true",
-        help="Clamp only the warm-start DOFs to robot limits before Newton IK. Disabled by default for diagnostics.",
+        help="Exit with an error if the solved motion has any DOF outside MJCF limits beyond --dof-limit-tolerance.",
     )
     parser.add_argument("--height-offset", type=float, default=0.04)
     parser.add_argument(
@@ -554,13 +580,20 @@ def _extract_model_root_positions_np(
     return root
 
 
-def _asset_xml_path(cfg) -> Path:
+def _asset_xml_path(cfg, asset_mjcf: Path | None = None) -> Path:
+    if asset_mjcf is not None:
+        return asset_mjcf
     return Path(cfg.asset.asset_root) / cfg.asset.asset_file_name
 
 
-def _root_local_pelvis_marker_centroid_from_sites(cfg, site_prefix: str, pelvis_markers: list[str]) -> np.ndarray | None:
+def _root_local_pelvis_marker_centroid_from_sites(
+    cfg,
+    asset_mjcf: Path | None,
+    site_prefix: str,
+    pelvis_markers: list[str],
+) -> np.ndarray | None:
     """Infer the model root anchor from pelvis marker sites in the MJCF."""
-    xml_path = _asset_xml_path(cfg)
+    xml_path = _asset_xml_path(cfg, asset_mjcf)
     try:
         root = ET.parse(xml_path).getroot()
     except (ET.ParseError, OSError) as exc:
@@ -606,8 +639,13 @@ def _marker_site_name_candidates(marker_label: str, site_prefix: str) -> list[st
     return candidates
 
 
-def _load_marker_sites(cfg, site_prefix: str, marker_body_map: dict[str, str]) -> dict[str, MarkerSite]:
-    xml_path = _asset_xml_path(cfg)
+def _load_marker_sites(
+    cfg,
+    asset_mjcf: Path | None,
+    site_prefix: str,
+    marker_body_map: dict[str, str],
+) -> dict[str, MarkerSite]:
+    xml_path = _asset_xml_path(cfg, asset_mjcf)
     root = ET.parse(xml_path).getroot()
     candidate_to_label = {
         candidate: label
@@ -958,6 +996,67 @@ def _compute_rms_stats(ki, qpos: torch.Tensor, marker_set: MarkerSet, local_offs
     return RMSStats(overall_mm=overall_mm, per_marker_mm=per_marker_mm, num_valid_samples=total_count)
 
 
+def _compute_dof_limit_report(ki, dof_pos: torch.Tensor, tolerance: float) -> dict:
+    dof_cpu = dof_pos.detach().cpu().to(dtype=torch.float32)
+    lower = ki.dof_limits_lower.detach().cpu().to(dtype=torch.float32)
+    upper = ki.dof_limits_upper.detach().cpu().to(dtype=torch.float32)
+    tol = max(0.0, float(tolerance))
+    below = torch.clamp(lower[None] - dof_cpu - tol, min=0.0)
+    above = torch.clamp(dof_cpu - upper[None] - tol, min=0.0)
+    violation = torch.maximum(below, above)
+    outside = violation > 0.0
+
+    dofs = {}
+    for dof_idx, name in enumerate(ki.dof_names):
+        outside_dof = outside[:, dof_idx]
+        if not bool(outside_dof.any()):
+            continue
+        dof_values = dof_cpu[:, dof_idx]
+        below_dof = below[:, dof_idx] > 0.0
+        above_dof = above[:, dof_idx] > 0.0
+        dofs[name] = {
+            "lower": float(lower[dof_idx].item()),
+            "upper": float(upper[dof_idx].item()),
+            "min": float(dof_values.min().item()),
+            "mean": float(dof_values.mean().item()),
+            "max": float(dof_values.max().item()),
+            "below_percent": float(below_dof.float().mean().item() * 100.0),
+            "above_percent": float(above_dof.float().mean().item() * 100.0),
+            "outside_percent": float(outside_dof.float().mean().item() * 100.0),
+            "max_violation_rad": float(violation[:, dof_idx].max().item()),
+        }
+
+    total_samples = int(dof_cpu.numel())
+    violating_samples = int(outside.sum().item())
+    return {
+        "tolerance_rad": tol,
+        "violating_samples": violating_samples,
+        "total_samples": total_samples,
+        "outside_percent": float(violating_samples / max(total_samples, 1) * 100.0),
+        "max_violation_rad": float(violation.max().item()) if total_samples else 0.0,
+        "dofs": dofs,
+    }
+
+
+def _print_dof_limit_report(report: dict) -> None:
+    if report["violating_samples"] == 0:
+        print("Final DOF limit check: all solved DOFs are within MJCF limits.")
+        return
+
+    print(
+        "WARNING: solved DOFs exceed MJCF limits: "
+        f"{report['violating_samples']}/{report['total_samples']} samples "
+        f"({report['outside_percent']:.2f}%), max violation={report['max_violation_rad']:.4f} rad"
+    )
+    ranked = sorted(report["dofs"].items(), key=lambda item: item[1]["max_violation_rad"], reverse=True)
+    for name, item in ranked:
+        print(
+            f"  {name:>18s}: range=[{item['lower']:.3f}, {item['upper']:.3f}] "
+            f"min={item['min']:.3f} mean={item['mean']:.3f} max={item['max']:.3f} "
+            f"outside={item['outside_percent']:.2f}% max_violation={item['max_violation_rad']:.4f} rad"
+        )
+
+
 def _quat_rotate_inverse_xyzw(quat: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
     quat_xyz = -quat[..., :3]
     quat_w = quat[..., 3:4]
@@ -1088,10 +1187,10 @@ def _newton_xyzw_to_qpos_wxyz(joint_q: torch.Tensor) -> torch.Tensor:
     return qpos
 
 
-def _build_newton_model(cfg, device: torch.device):
+def _build_newton_model(cfg, device: torch.device, asset_mjcf: Path | None = None):
     import newton
 
-    asset_path = os.path.join(cfg.asset.asset_root, cfg.asset.asset_file_name)
+    asset_path = str(_asset_xml_path(cfg, asset_mjcf))
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig()
     builder.default_shape_cfg.mu = 1.0
@@ -1111,6 +1210,7 @@ def _build_newton_model(cfg, device: torch.device):
 def _batched_marker_pos_residuals(
     body_q: wp.array2d(dtype=wp.transform),
     target_pos: wp.array2d(dtype=wp.vec3),
+    valid: wp.array2d(dtype=wp.bool),
     link_indices: wp.array1d(dtype=wp.int32),
     link_offsets: wp.array1d(dtype=wp.vec3),
     weights: wp.array1d(dtype=wp.float32),
@@ -1120,11 +1220,17 @@ def _batched_marker_pos_residuals(
 ):
     row, marker_idx = wp.tid()
     base = problem_idx_map[row]
+    residual_idx = start_idx + marker_idx * 3
+    if not valid[base, marker_idx]:
+        residuals[row, residual_idx + 0] = 0.0
+        residuals[row, residual_idx + 1] = 0.0
+        residuals[row, residual_idx + 2] = 0.0
+        return
+
     body_tf = body_q[row, link_indices[marker_idx]]
     ee_pos = wp.transform_point(body_tf, link_offsets[marker_idx])
     error = target_pos[base, marker_idx] - ee_pos
     weight = weights[marker_idx]
-    residual_idx = start_idx + marker_idx * 3
     residuals[row, residual_idx + 0] = weight * error[0]
     residuals[row, residual_idx + 1] = weight * error[1]
     residuals[row, residual_idx + 2] = weight * error[2]
@@ -1132,6 +1238,7 @@ def _batched_marker_pos_residuals(
 
 @wp.kernel
 def _batched_marker_pos_jac_analytic(
+    valid: wp.array2d(dtype=wp.bool),
     link_indices: wp.array1d(dtype=wp.int32),
     link_offsets: wp.array1d(dtype=wp.vec3),
     weights: wp.array1d(dtype=wp.float32),
@@ -1143,6 +1250,8 @@ def _batched_marker_pos_jac_analytic(
     jacobian: wp.array3d(dtype=wp.float32),
 ):
     problem_idx, marker_idx, dof_idx = wp.tid()
+    if not valid[problem_idx, marker_idx]:
+        return
     if affects_dof[marker_idx, dof_idx] == wp.uint8(0):
         return
 
@@ -1251,11 +1360,12 @@ class BatchedMarkerPositionObjective(IKObjective):
     2D/3D launch so frames, markers, and DOFs are exposed to Warp together.
     """
 
-    def __init__(self, link_indices, link_offsets, target_positions, weights):
+    def __init__(self, link_indices, link_offsets, target_positions, valid, weights):
         super().__init__()
         self.link_indices = link_indices
         self.link_offsets = link_offsets
         self.target_positions = target_positions
+        self.valid = valid
         self.weights = weights
         self.num_markers = int(link_indices.shape[0])
         self.affects_dof = None
@@ -1305,6 +1415,7 @@ class BatchedMarkerPositionObjective(IKObjective):
             inputs=[
                 body_q,
                 self.target_positions,
+                self.valid,
                 self.link_indices,
                 self.link_offsets,
                 self.weights,
@@ -1323,6 +1434,7 @@ class BatchedMarkerPositionObjective(IKObjective):
             _batched_marker_pos_jac_analytic,
             dim=[body_q.shape[0], self.num_markers, model.joint_dof_count],
             inputs=[
+                self.valid,
                 self.link_indices,
                 self.link_offsets,
                 self.weights,
@@ -1345,7 +1457,7 @@ def _create_newton_marker_ik_context(args, cfg, qpos_init: torch.Tensor, marker_
     import newton.ik as ik
 
     device = torch.device("cpu") if args.device == "cpu" else torch.device(args.device)
-    model = _build_newton_model(cfg, device)
+    model = _build_newton_model(cfg, device, args.asset_mjcf)
     if model.joint_coord_count != qpos_init.shape[1]:
         raise ValueError(f"Newton joint_coord_count={model.joint_coord_count}, expected qpos width {qpos_init.shape[1]}")
 
@@ -1361,7 +1473,7 @@ def _create_newton_marker_ik_context(args, cfg, qpos_init: torch.Tensor, marker_
         dtype=torch.float32,
     )
     weights_wp = wp.from_torch(weights_torch, dtype=wp.float32)
-    objectives = [BatchedMarkerPositionObjective(link_indices_wp, link_offsets_wp, targets_wp, weights_wp)]
+    objectives = [BatchedMarkerPositionObjective(link_indices_wp, link_offsets_wp, targets_wp, valid_wp, weights_wp)]
     if args.joint_limit_weight > 0.0:
         objectives.append(
             ik.IKObjectiveJointLimit(
@@ -1458,9 +1570,14 @@ def _optimize_qpos_newton(
         qpos[:, 3:7] /= torch.linalg.norm(qpos[:, 3:7], dim=-1, keepdim=True).clamp_min(1e-8)
         return qpos
 
-    model = _build_newton_model(cfg, device)
+    model = _build_newton_model(cfg, device, args.asset_mjcf)
     if model.joint_coord_count != qpos_init.shape[1]:
         raise ValueError(f"Newton joint_coord_count={model.joint_coord_count}, expected qpos width {qpos_init.shape[1]}")
+    if not bool(marker_set.valid.all().item()):
+        raise ValueError(
+            "Per-marker Newton IK objectives cannot mask invalid marker samples. "
+            "Use --newton-jacobian analytic so the batched marker objective can zero invalid samples."
+        )
 
     joint_q_torch = _qpos_wxyz_to_newton_xyzw(qpos_init).contiguous()
     joint_q = wp.from_torch(joint_q_torch, dtype=wp.float32, requires_grad=args.newton_jacobian in {"autodiff", "mixed"})
@@ -1535,6 +1652,7 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         "c3d": str(args.c3d),
         "robot_name": args.robot_name,
         "output": str(args.output),
+        "asset_mjcf": str(getattr(args, "_asset_xml_path", args.asset_mjcf)),
         "overall_rms_mm": stats.overall_mm,
         "num_valid_marker_samples": stats.num_valid_samples,
         "markers": marker_set.labels,
@@ -1548,7 +1666,10 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         "chunk_size": args.chunk_size,
         "offset_calibration": args.offset_calibration,
         "offset_refine_passes": args.offset_refine_passes,
+        "effective_offset_refine_passes": getattr(args, "_effective_offset_refine_passes", args.offset_refine_passes),
+        "allow_calibrated_offset_refine": args.allow_calibrated_offset_refine,
         "root_orientation": args.root_orientation,
+        "warmstart_clamp_limits": args.warmstart_clamp_limits,
         "marker_set": getattr(args, "_resolved_marker_set", args.marker_set),
         "marker_weight": args.marker_weight,
         "foot_marker_weight": args.foot_marker_weight,
@@ -1564,6 +1685,8 @@ def _write_report(report_path: Path, args, stats: RMSStats, marker_set: MarkerSe
         report["joint_angle_plots"] = [str(path) for path in args._joint_angle_plot_paths]
     if hasattr(args, "_root_anchor"):
         report["root_anchor"] = args._root_anchor
+    if hasattr(args, "_dof_limit_report"):
+        report["dof_limit_report"] = args._dof_limit_report
     report["marker_offset_source"] = args.marker_offset_source
     report["marker_site_prefix"] = args.marker_site_prefix
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1683,10 +1806,16 @@ def main() -> None:
     _apply_treadmill_overground_if_requested(data, output_fps, args, marker_body_map)
     cfg = robot_config(args.robot_name)
     ki = cfg.kinematic_info
+    args._asset_xml_path = _asset_xml_path(cfg, args.asset_mjcf)
     pelvis_markers = [label for label, body_name in marker_body_map.items() if body_name == "pelvis" and _has_marker(data, label)]
     if not pelvis_markers:
         pelvis_markers = PELVIS_MARKERS
-    root_local_marker_centroid = _root_local_pelvis_marker_centroid_from_sites(cfg, args.marker_site_prefix, pelvis_markers)
+    root_local_marker_centroid = _root_local_pelvis_marker_centroid_from_sites(
+        cfg,
+        args.asset_mjcf,
+        args.marker_site_prefix,
+        pelvis_markers,
+    )
     if root_local_marker_centroid is not None:
         args._root_anchor = {
             "source": "mjcf_pelvis_marker_site_centroid",
@@ -1711,7 +1840,11 @@ def main() -> None:
         root_local_marker_centroid,
         pelvis_markers,
     )
-    marker_sites = _load_marker_sites(cfg, args.marker_site_prefix, marker_body_map) if args.marker_offset_source != "calibrated" else {}
+    marker_sites = (
+        _load_marker_sites(cfg, args.asset_mjcf, args.marker_site_prefix, marker_body_map)
+        if args.marker_offset_source != "calibrated"
+        else {}
+    )
     marker_set = _build_marker_set(
         data,
         ki.body_names,
@@ -1739,6 +1872,13 @@ def main() -> None:
     if args.marker_offset_source == "site" and num_refine_passes > 0:
         print("Ignoring --offset-refine-passes because --marker-offset-source=site uses fixed MJCF marker offsets.")
         num_refine_passes = 0
+    elif num_refine_passes > 0 and not args.allow_calibrated_offset_refine:
+        print(
+            "Ignoring --offset-refine-passes because calibrated marker offsets can hide bad segment poses. "
+            "Pass --allow-calibrated-offset-refine to restore the old behavior."
+        )
+        num_refine_passes = 0
+    args._effective_offset_refine_passes = num_refine_passes
     use_cached_context = _can_use_batched_marker_objective(args)
     qpos = _optimize_qpos_newton(
         args,
@@ -1796,6 +1936,10 @@ def main() -> None:
         velocity_max_horizon=3,
     )
     dof_pos = qpos[:, 7:].detach().cpu()
+    args._dof_limit_report = _compute_dof_limit_report(ki, dof_pos, args.dof_limit_tolerance)
+    _print_dof_limit_report(args._dof_limit_report)
+    if args.fail_on_dof_limit_violation and args._dof_limit_report["violating_samples"] > 0:
+        raise RuntimeError("Solved motion has DOF limit violations; see console output for details.")
     motion.dof_pos = dof_pos
     motion.dof_vel = compute_cartesian_velocity(dof_pos.unsqueeze(1), fps=output_fps).squeeze(1)
     motion.rigid_body_contacts = extract_contacts(data, cfg, args.force_threshold)
@@ -1832,7 +1976,7 @@ def main() -> None:
     print(f"Wrote RMS report: {report_path}")
     if args.export_marker_sites_mjcf is not None:
         _write_marker_sites_mjcf(
-            _asset_xml_path(cfg),
+            _asset_xml_path(cfg, args.asset_mjcf),
             args.export_marker_sites_mjcf,
             ki,
             marker_set,
