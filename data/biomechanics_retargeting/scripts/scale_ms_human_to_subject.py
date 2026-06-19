@@ -152,6 +152,19 @@ def parse_args() -> argparse.Namespace:
         help="Copy the whole base MJCF directory before writing output if output lives elsewhere.",
     )
     parser.add_argument(
+        "--add-marker-sites",
+        action="store_true",
+        help="Bake marker_config marker_sites from the static C3D window into the output MJCF as mocap_* sites.",
+    )
+    parser.add_argument("--site-prefix", default="mocap_", help="Prefix for generated marker site names.")
+    parser.add_argument("--site-size", default="0.008", help="Generated marker site size attribute.")
+    parser.add_argument("--site-rgba", default="0.1 0.45 1 1", help="Generated marker site rgba attribute.")
+    parser.add_argument(
+        "--strict-marker-sites",
+        action="store_true",
+        help="Fail when any configured marker site cannot be resolved instead of skipping it.",
+    )
+    parser.add_argument(
         "--list-markers",
         action="store_true",
         help="Print C3D marker labels and exit without writing a scaled MJCF.",
@@ -649,6 +662,188 @@ def apply_marker_site_scales(
     return changed
 
 
+def _unit_scale(data) -> float:
+    return 0.001 if data.point_units.lower() in {"mm", "millimeter", "millimeters"} else 1.0
+
+
+def _v3d_points_to_model(points: np.ndarray) -> np.ndarray:
+    result = np.empty_like(points, dtype=np.float32)
+    result[..., 0] = -points[..., 1]
+    result[..., 1] = points[..., 0]
+    result[..., 2] = points[..., 2]
+    return result
+
+
+def _matrix_to_quat_wxyz(matrix: np.ndarray) -> np.ndarray:
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (matrix[2, 1] - matrix[1, 2]) / s
+        y = (matrix[0, 2] - matrix[2, 0]) / s
+        z = (matrix[1, 0] - matrix[0, 1]) / s
+    elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+        s = np.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]) * 2.0
+        w = (matrix[2, 1] - matrix[1, 2]) / s
+        x = 0.25 * s
+        y = (matrix[0, 1] + matrix[1, 0]) / s
+        z = (matrix[0, 2] + matrix[2, 0]) / s
+    elif matrix[1, 1] > matrix[2, 2]:
+        s = np.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]) * 2.0
+        w = (matrix[0, 2] - matrix[2, 0]) / s
+        x = (matrix[0, 1] + matrix[1, 0]) / s
+        y = 0.25 * s
+        z = (matrix[1, 2] + matrix[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]) * 2.0
+        w = (matrix[1, 0] - matrix[0, 1]) / s
+        x = (matrix[0, 2] + matrix[2, 0]) / s
+        y = (matrix[1, 2] + matrix[2, 1]) / s
+        z = 0.25 * s
+    quat = np.array([w, x, y, z], dtype=np.float64)
+    return quat / np.linalg.norm(quat)
+
+
+def _root_pose_from_static_pelvis(data) -> tuple[np.ndarray, np.ndarray]:
+    pelvis_markers = ("RASI", "LASI", "RPSI", "LPSI")
+    scale = _unit_scale(data)
+    pelvis = np.stack([_marker_mean_m(data, name, scale) for name in pelvis_markers], axis=0)
+    pelvis = _v3d_points_to_model(pelvis.astype(np.float32))
+    root_pos = np.nanmean(pelvis, axis=0).astype(np.float64)
+
+    rasi, lasi, rpsi, lpsi = pelvis.astype(np.float64)
+    x_axis_hint = 0.5 * (rasi + lasi) - 0.5 * (rpsi + lpsi)
+    y_axis = lasi - rasi
+    x_axis_hint /= np.clip(np.linalg.norm(x_axis_hint), 1e-8, None)
+    y_axis /= np.clip(np.linalg.norm(y_axis), 1e-8, None)
+    z_axis = np.cross(x_axis_hint, y_axis)
+    z_axis /= np.clip(np.linalg.norm(z_axis), 1e-8, None)
+    x_axis = np.cross(y_axis, z_axis)
+    x_axis /= np.clip(np.linalg.norm(x_axis), 1e-8, None)
+    root_rot = np.stack([x_axis, y_axis, z_axis], axis=-1)
+    return root_pos, _matrix_to_quat_wxyz(root_rot)
+
+
+def _resolve_marker_site_position(data, marker_config: Mapping[str, Any], label: str, spec) -> np.ndarray:
+    scale = _unit_scale(data)
+    if isinstance(spec, str):
+        point_v3d = _marker_mean_m(data, label, scale)
+    elif isinstance(spec, Mapping):
+        if "point" in spec:
+            point_specs = marker_config.get("points", {})
+            if not isinstance(point_specs, Mapping):
+                raise TypeError("marker config 'points' must be an object when marker_sites uses point references")
+            point_v3d = _resolve_point(data, str(spec["point"]), point_specs, {}, scale)
+        elif "marker" in spec:
+            point_v3d = _marker_mean_m(data, str(spec["marker"]), scale)
+        else:
+            point_v3d = _marker_mean_m(data, label, scale)
+    else:
+        raise TypeError(f"Unsupported marker site spec for {label!r}: {type(spec).__name__}")
+    return _v3d_points_to_model(np.asarray(point_v3d, dtype=np.float32))
+
+
+def _body_name_from_marker_site_spec(label: str, spec) -> str:
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, Mapping) and "body" in spec:
+        return str(spec["body"])
+    raise ValueError(f"marker_sites entry for {label!r} must be a body name or object with a body field")
+
+
+def _remove_existing_sites_with_prefix(root: ET.Element, site_prefix: str) -> int:
+    removed = 0
+    if not site_prefix:
+        return removed
+    for body in root.iter("body"):
+        for child in list(body):
+            if child.tag == "site" and (child.get("name") or "").startswith(site_prefix):
+                body.remove(child)
+                removed += 1
+    return removed
+
+
+def _format_vec(vec: np.ndarray) -> str:
+    return " ".join(f"{float(x):.9f}" for x in vec.tolist())
+
+
+def add_marker_sites_from_static_c3d(
+    mjcf: Path,
+    c3d: Path,
+    marker_config: Mapping[str, Any],
+    static_start: int,
+    static_end: int,
+    *,
+    site_prefix: str = "mocap_",
+    site_size: str = "0.008",
+    site_rgba: str = "0.1 0.45 1 1",
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Bake static C3D marker locations into an already-written MJCF."""
+    marker_sites = marker_config.get("marker_sites", {})
+    if not isinstance(marker_sites, Mapping):
+        raise TypeError("marker config must contain an object-valued marker_sites section")
+
+    import mujoco
+
+    data = load_c3d(c3d, start_frame=static_start, end_frame=static_end)
+    model = mujoco.MjModel.from_xml_path(str(mjcf))
+    mj_data = mujoco.MjData(model)
+    root_pos, root_quat = _root_pose_from_static_pelvis(data)
+    if model.nq >= 7:
+        mj_data.qpos[:3] = root_pos
+        mj_data.qpos[3:7] = root_quat
+    mujoco.mj_forward(model, mj_data)
+
+    tree = ET.parse(mjcf)
+    root = tree.getroot()
+    bodies = _body_by_name(root)
+    removed_existing = _remove_existing_sites_with_prefix(root, site_prefix)
+    written: list[str] = []
+    skipped: list[str] = []
+
+    for label, spec in marker_sites.items():
+        label = str(label)
+        site_name = f"{site_prefix}{label}"
+        body_name = _body_name_from_marker_site_spec(label, spec)
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+        if body_id < 0 or body_name not in bodies:
+            message = f"Body {body_name!r} for marker {label!r} not found in {mjcf}"
+            if strict:
+                raise ValueError(message)
+            skipped.append(message)
+            continue
+        try:
+            marker_world = _resolve_marker_site_position(data, marker_config, label, spec).astype(np.float64)
+        except (KeyError, ValueError, TypeError) as exc:
+            message = f"Could not resolve marker {label!r}: {exc}"
+            if strict:
+                raise ValueError(message) from exc
+            skipped.append(message)
+            continue
+        body_pos = mj_data.xpos[body_id].copy()
+        body_rot = mj_data.xmat[body_id].reshape(3, 3).copy()
+        local_pos = body_rot.T @ (marker_world - body_pos)
+        ET.SubElement(
+            bodies[body_name],
+            "site",
+            {
+                "name": site_name,
+                "type": "sphere",
+                "group": "0",
+                "size": str(site_size),
+                "rgba": site_rgba,
+                "pos": _format_vec(local_pos),
+            },
+        )
+        written.append(f"{site_name}->{body_name}")
+
+    ET.indent(tree, space="  ")
+    tree.write(mjcf, encoding="unicode", xml_declaration=False)
+    mjcf.write_text(mjcf.read_text() + "\n")
+    return {"removed_existing": removed_existing, "written": written, "skipped": skipped}
+
+
 def maybe_copy_asset_dir(base_xml: Path, output_xml: Path, copy_base_asset_dir: bool) -> None:
     if not copy_base_asset_dir:
         output_xml.parent.mkdir(parents=True, exist_ok=True)
@@ -737,6 +932,20 @@ def main() -> None:
     maybe_copy_asset_dir(args.base_xml, output_xml, args.copy_base_asset_dir)
     tree.write(output_xml, encoding="utf-8", xml_declaration=False)
 
+    marker_site_bake: dict[str, Any] | None = None
+    if args.add_marker_sites:
+        marker_site_bake = add_marker_sites_from_static_c3d(
+            output_xml,
+            args.c3d,
+            marker_config,
+            static_start,
+            static_end,
+            site_prefix=args.site_prefix,
+            site_size=args.site_size,
+            site_rgba=args.site_rgba,
+            strict=args.strict_marker_sites,
+        )
+
     report = {
         "c3d": str(args.c3d),
         "base_xml": str(args.base_xml),
@@ -751,6 +960,7 @@ def main() -> None:
         "changed_geometry": geom_changed,
         "changed_mesh_assets": mesh_asset_changed,
         "changed_marker_sites": marker_site_changed,
+        "static_marker_site_bake": marker_site_bake,
         "notes": [
             "Kinematic body offsets were scaled; masses/inertias were intentionally left unchanged.",
             "Segment geometry (skin capsules, wrap surfaces, muscle sites) was scaled about each body "
@@ -764,6 +974,13 @@ def main() -> None:
 
     print(f"Static window: {static_start}-{static_end}")
     print(f"Wrote scaled MJCF: {output_xml}")
+    if marker_site_bake is not None:
+        print(
+            f"Baked {len(marker_site_bake['written'])} static marker sites into {output_xml} "
+            f"(removed {marker_site_bake['removed_existing']} existing {args.site_prefix}* sites)"
+        )
+        if marker_site_bake["skipped"]:
+            print(f"Skipped {len(marker_site_bake['skipped'])} marker sites")
     print(f"Wrote scaling report: {report_path}")
     for name, scale in scales.items():
         print(f"  {name}: subject={subject_lengths[name]:.4f} m base={base_lengths[name]:.4f} m scale={scale:.3f}")

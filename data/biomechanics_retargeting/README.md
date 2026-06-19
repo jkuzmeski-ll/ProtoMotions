@@ -65,7 +65,22 @@ Optionally strip the upper body to a pelvis-and-legs-only asset:
 ## 2. Attach calibration marker sites to the scaled MJCF
 
 Adds `mocap_*` `<site>` elements from a static C3D window so the IK retargeter
-has anatomical marker offsets.
+has anatomical marker offsets. Prefer doing this during scaling with
+`scale_ms_human_to_subject.py --add-marker-sites` so the subject MJCF is born
+with the fixed sites:
+
+```bash
+.venv/bin/python data/biomechanics_retargeting/scripts/scale_ms_human_to_subject.py \
+    c3dproto/S003/S003.c3d \
+    --marker-config data/biomechanics_retargeting/configs/ms_human_700_cal101_marker_scaling_config.json \
+    --output-xml protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S003.xml \
+    --report data/biomechanics_retargeting/retargeted/S003_scaling_report.json \
+    --static-start 1 --static-end 100 \
+    --add-marker-sites --strict-marker-sites
+```
+
+If the scaled/lower-only MJCF already exists, this helper updates that asset
+in-place without creating a parallel MJCF:
 
 ```bash
 .venv/bin/python data/biomechanics_retargeting/scripts/add_mjcf_marker_sites_from_c3d.py \
@@ -121,26 +136,35 @@ retarget the dynamic trial with `--marker-offset-source site`. Do **not** bake
 sites from a full dynamic gait trial: the resulting trial-average sites encode
 soft-tissue motion and can bias the model toward bent knees.
 
-For S081, Cal 101 does not contain the thigh/shank cluster markers, so use the
-static standing frames at the start of Trial 101 to bake the s081-clusters sites:
+For S081, bake the s081-clusters sites from the subject's dedicated Cal 101
+static standing trial directly into the subject's default MJCF. Cal 101
+contains the same cluster marker set as Trial 101, but without gait-phase
+soft-tissue motion. Prefer doing this during scaling:
 
 ```bash
-.venv/bin/python data/biomechanics_retargeting/scripts/ik_retarget_c3d_to_ms_human_lower.py \
-    "c3dproto/Trial 101.v3d.c3d" \
-    --robot-name ms_human_lower_s081 \
-    --marker-set s081-clusters \
-    --marker-offset-source calibrated \
-    --offset-refine-passes 40 \
-    --allow-calibrated-offset-refine \
-    --max-frames 300 \
-    --newton-iterations 160 \
-    --export-marker-sites-mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081-LowerOnly-Trial101Sites.xml \
-    --output data/biomechanics_retargeting/retargeted/proto/S081_trial101_static_site_bake.motion \
-    --report data/biomechanics_retargeting/retargeted/S081_trial101_static_site_bake.rms.json \
-    --no-joint-angle-plots
+.venv/bin/python data/biomechanics_retargeting/scripts/scale_ms_human_to_subject.py \
+    "c3dproto/Cal 101.v3d.c3d" \
+    --marker-config data/biomechanics_retargeting/configs/ms_human_700_cal101_marker_scaling_config.json \
+    --output-xml protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081.xml \
+    --report data/biomechanics_retargeting/retargeted/S081_scaling_report.json \
+    --add-marker-sites --strict-marker-sites
 ```
 
-Then retarget the full dynamic trial against those fixed static sites:
+Then create/update the lower-only asset from that scaled MJCF. The lower-body
+extraction preserves the pelvis/leg `mocap_*` sites. If the lower-only asset
+already exists and you only need to refresh sites, update it in-place:
+
+```bash
+.venv/bin/python data/biomechanics_retargeting/scripts/add_mjcf_marker_sites_from_c3d.py \
+    "c3dproto/Cal 101.v3d.c3d" \
+    --mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081-LowerOnly.xml \
+    --marker-config data/biomechanics_retargeting/configs/ms_human_700_cal101_marker_scaling_config.json \
+    --strict
+```
+
+Then retarget the full dynamic trial against those fixed static sites. No
+`--asset-mjcf` override is needed because the robot config already points at the
+updated `MS-Human-700-Locomotion-S081-LowerOnly.xml`:
 
 ```bash
 .venv/bin/python data/biomechanics_retargeting/scripts/ik_retarget_c3d_to_ms_human_lower.py \
@@ -148,12 +172,19 @@ Then retarget the full dynamic trial against those fixed static sites:
     --robot-name ms_human_lower_s081 \
     --marker-set s081-clusters \
     --marker-offset-source site \
-    --asset-mjcf protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S081-LowerOnly-Trial101Sites.xml \
     --max-frames 0 \
     --newton-iterations 160 \
     --output data/biomechanics_retargeting/retargeted/proto/S081_trial101_marker_newton_site.motion \
     --report data/biomechanics_retargeting/retargeted/S081_trial101_marker_newton_site.rms.json
 ```
+
+The first command updates the default robot MJCF in-place; it does not create a
+new parallel asset. The final dynamic motion to inspect is
+`S081_trial101_marker_newton_site.motion`.
+
+During `env_kinematic_playback.py`, `--robot-name ms_human_lower_s081` still logs
+the robot config's default MJCF path. That path should now be the updated asset
+with the Cal 101 `mocap_*` sites, so the solve and playback use the same robot.
 
 `ik_retarget_c3d_to_ms_human_lower.py` refuses to export marker sites from
 windows longer than 500 loaded frames by default. Use `--max-frames`,
