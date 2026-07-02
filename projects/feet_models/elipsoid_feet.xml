@@ -1,0 +1,221 @@
+<mujoco model="elipsoid_feet">
+  <compiler angle="radian" coordinate="local" />
+
+  <option
+        timestep="0.001"
+        integrator="implicitfast"
+        solver="Newton"
+        cone="elliptic"
+        impratio="10"
+        iterations="80"
+        tolerance="1e-10"
+        noslip_iterations="2"
+    >
+    <flag nativeccd="enable" multiccd="enable" />
+  </option>
+
+  <default>
+    <joint damping="0.12" armature="0.0005" />
+
+    <geom solref="0.012 1" solimp="0.90 0.98 0.0015 0.5 2" margin="0.0005" />
+
+    <!--
+      Brown/McPhee-style foot-ground contact geometry.
+
+      The paper models volumetric contact analytically with three ellipsoids:
+        - heel ellipsoid on the foot segment,
+        - ball-of-foot ellipsoid on the foot segment,
+        - toe ellipsoid on a toe segment connected by a revolute toe joint.
+
+      This sandbox keeps the Table 3 heel and ball ellipsoids, but represents
+      the toe contact with a capsule pulled farther anterior from the midfoot
+      and angled with the ball/midfoot contact. This gives a longer toe contact
+      patch while preserving the same two-segment foot structure.
+
+      MJCF cannot express the paper's exact volumetric law
+          F_n = k_V V (1 + a_V v_cn)
+      directly in XML, so this is a clean-room MuJoCo proxy: soft contact
+      parameters, elliptic cones, explicit floor pairs, and touch sensors. Tune
+      the contact poses/sizes and pair solref/solimp values against GRF/COP/
+      pressure data to match a subject-specific foot.
+    -->
+    <default class="foot_contact">
+      <geom
+                type="ellipsoid"
+                condim="6"
+                contype="1"
+                conaffinity="2"
+                friction="1.0 0.03 0.002"
+                rgba="0.10 0.45 0.85 0.88"
+            />
+    </default>
+
+
+    <default class="touch_site">
+      <site type="box" rgba="0.9 0.2 0.1 0.18" />
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="key" pos="0 -1.2 1.5" dir="0 1 -1" diffuse="0.8 0.8 0.8" />
+
+    <geom
+            name="floor"
+            type="plane"
+            size="2.0 1.0 0.05"
+            condim="6"
+            contype="2"
+            conaffinity="1"
+            friction="1.0 0.03 0.002"
+            rgba="0.25 0.25 0.25 1"
+        />
+
+    <!--
+      Paper/Table 3 convention:
+        +x medial, +y anterior toward the toes, +z upward.
+
+      The heel and ball ellipsoid radii, centroids, and 1-2-3 body-fixed Euler
+      rotations below are the Table 3 initial-guess values converted from
+      millimetres to metres.
+      The toe hinge axis is the paper's toe-frame x-axis and is placed about
+      16 mm above the ground in the rest keyframe.
+    -->
+    <body name="foot_segment" pos="0 0 0">
+      <freejoint name="foot_free" />
+      <inertial
+                pos="0.010 0 0.028"
+                mass="0.55"
+                diaginertia="0.0012 0.0026 0.0021"
+            />
+
+      <!-- Foot-segment ellipsoid 1: heel contact.
+           Table 3: a,b,c = 30,50,30 mm; r = 0,30,-15 mm;
+           alpha,beta,gamma = 0,0.15,0 rad. -->
+      <geom
+                name="heel_ellipsoid"
+                class="foot_contact"
+                pos="0.000 0.030 -0.015"
+                quat="0.9971888 0.0000000 0.0749297 0.0000000"
+                size="0.030 0.050 0.030"
+                rgba="0.18 0.48 0.90 0.90"
+            />
+
+      <!-- Foot-segment ellipsoid 2: ball/metatarsal-head contact.
+           Table 3: a,b,c = 60,30,30 mm; r = 10,170,-13 mm;
+           alpha,beta,gamma = 0,0.2,0.5 rad. -->
+      <geom
+                name="ball_ellipsoid"
+                class="foot_contact"
+                pos="0.010 0.170 -0.01366"
+                quat="0.9640719 0.0246992 0.0967298 0.2461680"
+                size="0.060 0.030 0.030"
+                rgba="0.16 0.70 0.28 0.90"
+            />
+
+      <site
+                name="heel_touch"
+                class="touch_site"
+                pos="0.000 0.030 -0.031"
+                size="0.050 0.070 0.004"
+            />
+      <site
+                name="ball_touch"
+                class="touch_site"
+                pos="0.010 0.170 -0.031"
+                size="0.080 0.055 0.004"
+            />
+
+      <body name="toe_segment" pos="0.000 0.200 -0.014">
+        <joint
+                    name="toe_hinge"
+                    type="hinge"
+                    axis="1 0 0"
+                    range="-0.8 0.7"
+                    limited="true"
+                    damping="0.18"
+                    armature="0.0004"
+                />
+        <inertial
+                    pos="0.000 0.050 0.002"
+                    mass="0.12"
+                    diaginertia="0.00018 0.00045 0.00038"
+                />
+
+        <!-- Toe contact: capsule pulled slightly anterior from the midfoot and
+             kept parallel to the ground for a longer toe contact patch. -->
+        <geom
+                    name="toe_capsule"
+                    class="foot_contact"
+                    type="capsule"
+                    fromto="-0.024 0.025 -0.015  0.044 0.063 -0.015"
+                    size="0.016"
+                    rgba="0.82 0.12 0.12 0.90"
+                />
+
+        <site
+                    name="toe_touch"
+                    class="touch_site"
+                    pos="0.010 0.044 -0.031"
+                    size="0.040 0.060 0.004"
+                />
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <pair
+            name="floor_heel_ellipsoid"
+            geom1="floor"
+            geom2="heel_ellipsoid"
+            condim="6"
+            friction="1.0 0.9 0.030 0.002 0.002"
+            solref="0.012 1"
+            solimp="0.90 0.98 0.0015 0.5 2"
+        />
+    <pair
+            name="floor_ball_ellipsoid"
+            geom1="floor"
+            geom2="ball_ellipsoid"
+            condim="6"
+            friction="1.1 0.95 0.030 0.002 0.002"
+            solref="0.011 1"
+            solimp="0.90 0.98 0.0015 0.5 2"
+        />
+    <pair
+            name="floor_toe_capsule"
+            geom1="floor"
+            geom2="toe_capsule"
+            condim="6"
+            friction="1.2 1.0 0.030 0.002 0.002"
+            solref="0.010 1"
+            solimp="0.92 0.99 0.0015 0.5 2"
+        />
+  </contact>
+
+  <sensor>
+    <touch name="heel_force" site="heel_touch" />
+    <touch name="ball_force" site="ball_touch" />
+    <touch name="toe_force" site="toe_touch" />
+  </sensor>
+
+  <keyframe>
+    <!-- qpos: free root xyz + root quat, then toe hinge angle. -->
+    <key name="rest_pose" qpos="0 0 0.030 1 0 0 0  0.0" />
+
+    <key
+            name="heel_strike"
+            qpos="0 -0.020 0.034 0.9961947 0.0871557 0 0  0.0"
+        />
+
+    <key
+            name="forefoot_loading"
+            qpos="0 0.020 0.034 0.9945219 -0.1045285 0 0  -0.25"
+        />
+
+    <key name="toe_off" qpos="0 0.045 0.040 0.9848078 -0.1736482 0 0  -0.42" />
+
+    <key name="inside_tilt" qpos="0 0 0.032 0.9961947 0 -0.0871557 0  0.0" />
+
+    <key name="outside_tilt" qpos="0 0 0.032 0.9961947 0 0.0871557 0  0.0" />
+  </keyframe>
+</mujoco>

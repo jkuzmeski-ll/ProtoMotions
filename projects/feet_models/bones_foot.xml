@@ -1,0 +1,261 @@
+<mujoco model="bones_foot">
+  <compiler angle="radian" coordinate="local"/>
+
+  <option timestep="0.001"
+          integrator="implicitfast"
+          solver="Newton"
+          cone="elliptic"
+          impratio="10"
+          iterations="80"
+          tolerance="1e-10"
+          noslip_iterations="2">
+    <flag nativeccd="enable" multiccd="enable"/>
+  </option>
+
+  <default>
+    <joint damping="0.15" armature="0.0005"/>
+
+    <geom solref="0.010 1"
+          solimp="0.90 0.98 0.0015 0.5 2"
+          margin="0.0005"/>
+
+    <!--
+      Park/Yu/Lee-style artificial bones: capsule primitives with a shared
+      radius. Foot geoms use contact bits that collide with the floor but not
+      with each other, avoiding internal self-collision chatter.
+    -->
+    <default class="foot_bone_contact">
+      <geom type="capsule"
+            size="0.010"
+            condim="6"
+            contype="1"
+            conaffinity="2"
+            friction="1.1 0.03 0.002"
+            rgba="0.10 0.45 0.85 1"/>
+    </default>
+
+    <default class="foot_bone_visual">
+      <geom type="capsule"
+            size="0.008"
+            contype="0"
+            conaffinity="0"
+            rgba="0.95 0.78 0.28 0.45"/>
+    </default>
+
+    <default class="touch_site">
+      <site type="box"
+            rgba="0.9 0.2 0.1 0.18"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <light name="key" pos="0 -1.2 1.5" dir="0 1 -1" diffuse="0.8 0.8 0.8"/>
+
+    <geom name="floor"
+          type="plane"
+          size="2.0 1.0 0.05"
+          condim="6"
+          contype="2"
+          conaffinity="1"
+          friction="1.1 0.03 0.002"
+          rgba="0.25 0.25 0.25 1"/>
+
+    <!--
+      Multi-Segment Foot for Human Modeling and Simulation inspired sandbox.
+
+      Paper structure:
+        - 16 capsule-shaped artificial bones.
+        - 5 controlled segments:
+            medial_phalanges, lateral_phalanges,
+            medial_metatarsal, lateral_metatarsal, heel.
+        - 4 ball joints = 12 foot DoFs.
+
+      Local convention:
+        +x forward toward toes, +y medial, +z upward.
+
+      This is a clean-room MJCF approximation of the paper's described model,
+      not an extracted author asset. The public project page exposes the paper
+      and video, but I did not find an official XML/model download online.
+    -->
+    <body name="medial_metatarsal" pos="0 0 0.010">
+      <freejoint name="foot_free"/>
+      <inertial pos="0.020 0.012 0.006" mass="0.28" diaginertia="0.0008 0.0016 0.0014"/>
+
+      <!-- Segment 1: medial metatarsal, subordinate to ankle/root. -->
+      <geom name="metatarsal_1" class="foot_bone_contact"
+            fromto="-0.030 0.036 0.070  0.070 0.035 0.006"
+            rgba="0.95 0.64 0.10 1"/>
+      <geom name="metatarsal_2" class="foot_bone_contact"
+            fromto="-0.034 0.016 0.058  0.074 0.015 0.001"
+            rgba="0.95 0.64 0.10 1"/>
+      <geom name="metatarsal_3" class="foot_bone_contact"
+            fromto="-0.036 -0.004 0.042  0.078 -0.004 0.000"
+            rgba="0.95 0.64 0.10 1"/>
+
+      <!-- Elevated tarsal/arch bones. They are visual-only to match the paper's
+           statement that these bones rarely contact the ground and mostly form
+           the arch/support structure. -->
+      <geom name="talus_visual" class="foot_bone_visual"
+            fromto="-0.090 0.006 0.092  -0.040 0.006 0.076"/>
+      <geom name="navicular_visual" class="foot_bone_visual"
+            fromto="-0.054 0.026 0.084  -0.010 0.028 0.064"/>
+      <geom name="cuneiform_visual" class="foot_bone_visual"
+            fromto="-0.014 0.028 0.064  0.030 0.030 0.040"/>
+      <geom name="medial_arch_ridge_visual" class="foot_bone_visual"
+            size="0.006"
+            fromto="-0.072 0.034 0.030  -0.020 0.038 0.092"/>
+      <geom name="medial_arch_drop_visual" class="foot_bone_visual"
+            size="0.006"
+            fromto="-0.020 0.038 0.092  0.070 0.036 0.018"/>
+
+      <site name="medial_metatarsal_touch" class="touch_site"
+            pos="0.020 0.016 -0.004" size="0.070 0.035 0.004"/>
+
+      <!-- Segment 2: heel. The paper adds a non-anatomical heel joint so the
+           calcaneus-like capsule pair can meet the ground in many directions. -->
+      <body name="heel" pos="-0.070 0.000 0.000">
+        <joint name="heel_ball" type="ball" damping="0.35" armature="0.0006"/>
+        <inertial pos="-0.030 0 0" mass="0.18" diaginertia="0.0005 0.0008 0.0008"/>
+
+        <geom name="calcaneus_medial" class="foot_bone_contact"
+              fromto="-0.058 0.018 -0.002  0.006 0.014 0.036"
+              rgba="0.92 0.92 0.92 1"/>
+        <geom name="calcaneus_lateral" class="foot_bone_contact"
+              fromto="-0.058 -0.018 -0.002  0.006 -0.014 0.024"
+              rgba="0.92 0.92 0.92 1"/>
+
+        <site name="heel_touch" class="touch_site"
+              pos="-0.028 0 -0.006" size="0.060 0.040 0.004"/>
+      </body>
+
+      <!-- Segment 3: lateral metatarsal. Joint is placed near the fourth
+           metatarsal/cuboid region, matching the paper's lateral foot joint. -->
+      <body name="lateral_metatarsal" pos="-0.032 -0.028 0.000">
+        <joint name="lateral_metatarsal_ball" type="ball" damping="0.22" armature="0.0005"/>
+        <inertial pos="0.040 -0.006 0.000" mass="0.20" diaginertia="0.0006 0.0012 0.0010"/>
+
+        <geom name="cuboid" class="foot_bone_contact"
+              fromto="-0.020 0.004 0.038  0.018 0.000 0.014"
+              rgba="0.20 0.72 0.25 1"/>
+        <geom name="metatarsal_4" class="foot_bone_contact"
+              fromto="0.000 0.004 0.022  0.100 0.000 0.000"
+              rgba="0.20 0.72 0.25 1"/>
+        <geom name="metatarsal_5" class="foot_bone_contact"
+              fromto="-0.004 -0.018 0.010  0.088 -0.022 -0.001"
+              rgba="0.20 0.72 0.25 1"/>
+
+        <site name="lateral_metatarsal_touch" class="touch_site"
+              pos="0.040 -0.006 -0.006" size="0.075 0.035 0.004"/>
+
+        <!-- Segment 4: lateral phalanges, toes four and five. -->
+        <body name="lateral_phalanges" pos="0.090 -0.010 0.000">
+          <joint name="lateral_phalanges_ball" type="ball" damping="0.18" armature="0.0004"/>
+          <inertial pos="0.030 -0.004 0.000" mass="0.075" diaginertia="0.00015 0.00030 0.00025"/>
+
+          <geom name="phalanx_4" class="foot_bone_contact"
+                fromto="0.000 0.006 0.006  0.060 0.004 -0.001"
+                rgba="0.88 0.84 0.68 1"/>
+          <geom name="phalanx_5" class="foot_bone_contact"
+                fromto="0.000 -0.012 0.004  0.052 -0.016 -0.002"
+                rgba="0.88 0.84 0.68 1"/>
+
+          <site name="lateral_phalanges_touch" class="touch_site"
+                pos="0.030 -0.004 -0.006" size="0.055 0.025 0.004"/>
+        </body>
+      </body>
+
+      <!-- Segment 5: medial phalanges, hallux plus toes two and three. The
+           paper merges the first, second, and third toes into one segment for
+           simplicity, producing 10 toe-area contact points across both phalanx
+           segments in their capsule endpoint model. -->
+      <body name="medial_phalanges" pos="0.078 0.006 0.000">
+        <joint name="medial_phalanges_ball" type="ball" damping="0.18" armature="0.0004"/>
+        <inertial pos="0.036 0.014 0.000" mass="0.11" diaginertia="0.00020 0.00042 0.00035"/>
+
+        <geom name="phalanx_1" class="foot_bone_contact"
+              fromto="0.000 0.032 0.008  0.076 0.036 -0.002"
+              rgba="0.82 0.10 0.10 1"/>
+        <geom name="phalanx_2" class="foot_bone_contact"
+              fromto="0.000 0.014 0.006  0.070 0.014 -0.001"
+              rgba="0.82 0.10 0.10 1"/>
+        <geom name="phalanx_3" class="foot_bone_contact"
+              fromto="0.000 -0.004 0.004  0.066 -0.006 -0.001"
+              rgba="0.82 0.10 0.10 1"/>
+
+        <site name="medial_phalanges_touch" class="touch_site"
+              pos="0.036 0.014 -0.006" size="0.070 0.045 0.004"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <pair name="floor_calcaneus_medial" geom1="floor" geom2="calcaneus_medial"
+          condim="6" friction="1.2 1.0 0.035 0.003 0.003"
+          solref="0.010 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+    <pair name="floor_calcaneus_lateral" geom1="floor" geom2="calcaneus_lateral"
+          condim="6" friction="1.2 1.0 0.035 0.003 0.003"
+          solref="0.010 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+
+    <pair name="floor_metatarsal_1" geom1="floor" geom2="metatarsal_1"
+          condim="6" friction="1.1 0.9 0.025 0.002 0.002"
+          solref="0.012 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+    <pair name="floor_metatarsal_2" geom1="floor" geom2="metatarsal_2"
+          condim="6" friction="1.1 0.9 0.025 0.002 0.002"
+          solref="0.012 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+    <pair name="floor_metatarsal_3" geom1="floor" geom2="metatarsal_3"
+          condim="6" friction="1.1 0.9 0.025 0.002 0.002"
+          solref="0.012 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+    <pair name="floor_cuboid" geom1="floor" geom2="cuboid"
+          condim="6" friction="1.1 0.9 0.025 0.002 0.002"
+          solref="0.012 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+    <pair name="floor_metatarsal_4" geom1="floor" geom2="metatarsal_4"
+          condim="6" friction="1.15 0.95 0.030 0.002 0.002"
+          solref="0.011 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+    <pair name="floor_metatarsal_5" geom1="floor" geom2="metatarsal_5"
+          condim="6" friction="1.15 0.95 0.030 0.002 0.002"
+          solref="0.011 1" solimp="0.90 0.98 0.0015 0.5 2"/>
+
+    <pair name="floor_phalanx_1" geom1="floor" geom2="phalanx_1"
+          condim="6" friction="1.25 1.0 0.030 0.002 0.002"
+          solref="0.010 1" solimp="0.92 0.99 0.0015 0.5 2"/>
+    <pair name="floor_phalanx_2" geom1="floor" geom2="phalanx_2"
+          condim="6" friction="1.20 1.0 0.030 0.002 0.002"
+          solref="0.010 1" solimp="0.92 0.99 0.0015 0.5 2"/>
+    <pair name="floor_phalanx_3" geom1="floor" geom2="phalanx_3"
+          condim="6" friction="1.20 1.0 0.030 0.002 0.002"
+          solref="0.010 1" solimp="0.92 0.99 0.0015 0.5 2"/>
+    <pair name="floor_phalanx_4" geom1="floor" geom2="phalanx_4"
+          condim="6" friction="1.15 1.0 0.025 0.002 0.002"
+          solref="0.010 1" solimp="0.92 0.99 0.0015 0.5 2"/>
+    <pair name="floor_phalanx_5" geom1="floor" geom2="phalanx_5"
+          condim="6" friction="1.15 1.0 0.025 0.002 0.002"
+          solref="0.010 1" solimp="0.92 0.99 0.0015 0.5 2"/>
+  </contact>
+
+  <sensor>
+    <touch name="heel_force" site="heel_touch"/>
+    <touch name="medial_metatarsal_force" site="medial_metatarsal_touch"/>
+    <touch name="lateral_metatarsal_force" site="lateral_metatarsal_touch"/>
+    <touch name="medial_phalanges_force" site="medial_phalanges_touch"/>
+    <touch name="lateral_phalanges_force" site="lateral_phalanges_touch"/>
+  </sensor>
+
+  <keyframe>
+    <!-- qpos: free root xyz + root quat, then 4 ball-joint quats:
+         heel, lateral_metatarsal, lateral_phalanges, medial_phalanges. -->
+    <key name="rest_pose"
+         qpos="0 0 0.010 1 0 0 0  1 0 0 0  1 0 0 0  1 0 0 0  1 0 0 0"/>
+
+    <key name="heel_strike"
+         qpos="-0.020 0 0.020 0.9961947 0 -0.0871557 0  0.9961947 0 0.0871557 0  1 0 0 0  1 0 0 0  1 0 0 0"/>
+
+    <key name="tiptoe"
+             qpos="0.025 0 0.030 0.9848078 0 0.1736482 0  1 0 0 0  0.9961947 0 -0.0871557 0  0.9659258 0 -0.2588190 0  0.9659258 0 -0.2588190 0"/>
+
+    <key name="inside_tilt"
+             qpos="0 0 0.020 0.9961947 -0.0871557 0 0  0.9961947 -0.0871557 0 0  0.9848078 -0.1736482 0 0  1 0 0 0  0.9961947 -0.0871557 0 0"/>
+
+    <key name="outside_tilt"
+             qpos="0 0 0.028 0.9961947 0.0871557 0 0  0.9961947 0.0871557 0 0  0.9848078 0.1736482 0 0  0.9961947 0.0871557 0 0  1 0 0 0"/>
+  </keyframe>
+</mujoco>
