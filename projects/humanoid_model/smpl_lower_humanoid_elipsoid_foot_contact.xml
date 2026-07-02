@@ -1,0 +1,147 @@
+<mujoco model="smpl_lower_humanoid_elipsoid_foot_contact">
+  <compiler angle="radian" coordinate="local" />
+  <option timestep="0.001" integrator="implicitfast" solver="Newton" cone="elliptic" impratio="10" iterations="80" tolerance="1e-10" noslip_iterations="2">
+    <flag nativeccd="enable" multiccd="enable" />
+  </option>
+  <default>
+    <joint damping="0.12" armature="0.0005" />
+    <geom solref="0.012 1" solimp="0.90 0.98 0.0015 0.5 2" margin="0.0005" />
+    <default class="elipsoid_foot_contact">
+      <geom type="ellipsoid" density="0" condim="6" contype="1" conaffinity="2" friction="1.0 0.03 0.002" rgba="0.10 0.45 0.85 0.88" />
+    </default>
+    <default class="elipsoid_touch_site">
+      <site type="box" group="3" rgba="0.9 0.2 0.1 0.18" />
+    </default>
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".4 .5 .6" rgb2="0 0 0" width="100" height="100" />
+    <texture builtin="flat" height="1278" mark="cross" markrgb="1 1 1" name="texgeom" random="0.01" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" type="cube" width="127" />
+    <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100" />
+    <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane" />
+    <material name="geom" texture="texgeom" texuniform="true" />
+  </asset>
+  <worldbody>
+    <light cutoff="100" diffuse="1 1 1" dir="-0 0 -1.3" directional="true" exponent="1" pos="0 0 1.3" specular=".1 .1 .1" />
+    <body name="Pelvis" pos="-0.0018 -0.2233 0.0282">
+      <geom type="box" pos="-0.0055 -0.0000 -0.0121" size="0.083 0.1069 0.0722" quat="1.0000 0.0000 0.0000 0.0000" density="1000" conaffinity="1" condim="3" contype="7" margin="0.001" rgba="0.8 0.6 .4 1" />
+      <body name="L_Hip" pos="-0.0068 0.0695 -0.0914">
+        <joint name="L_Hip_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+        <joint name="L_Hip_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+        <joint name="L_Hip_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+        <geom type="capsule" contype="1" conaffinity="1" density="2040.816327" fromto="-0.0009 0.0069 -0.0750 -0.0036 0.0274 -0.3002" size="0.0615" condim="3" margin="0.001" rgba="0.8 0.6 .4 1" />
+        <body name="L_Knee" pos="-0.0045 0.0343 -0.3752">
+          <joint name="L_Knee_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+          <joint name="L_Knee_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+          <joint name="L_Knee_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+          <geom type="capsule" contype="1" conaffinity="1" density="1234.567901" fromto="-0.0087 -0.0027 -0.0796 -0.0350 -0.0109 -0.3184" size="0.0541" condim="3" margin="0.001" rgba="0.8 0.6 .4 1" />
+          <body name="L_Ankle" pos="-0.0437 -0.0136 -0.398">
+            <joint name="L_Ankle_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+            <joint name="L_Ankle_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+            <joint name="L_Ankle_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+            <geom name="L_foot_inertial_visual" type="box" pos="0.0242 0.0233 -0.0239" size="0.085 0.0483 0.0464" quat="1.0000 0.0000 0.0000 0.0000" density="1000" conaffinity="0" condim="3" contype="0" margin="0.001" rgba="0.8 0.6 .4 0.18" />
+            <body name="L_elipsoid_foot_segment" pos="0.00000 0.02400 -0.03000">
+              <inertial pos="0.00000 -0.01000 0.02800" mass="0.55" diaginertia="0.0012 0.0026 0.0021" />
+              <geom name="L_heel_ellipsoid" class="elipsoid_foot_contact" pos="0.03000 0.00000 -0.01500" quat="0.70512 0.05298 0.05298 -0.70512" size="0.030 0.050 0.030" rgba="0.18 0.48 0.90 0.90" />
+              <geom name="L_ball_ellipsoid" class="elipsoid_foot_contact" pos="0.17000 -0.01000 -0.01366" quat="0.85577 0.08586 0.05093 -0.50763" size="0.060 0.030 0.030" rgba="0.16 0.70 0.28 0.90" />
+              <site name="L_heel_touch" class="elipsoid_touch_site" pos="0.03000 0.00000 -0.03100" size="0.050 0.070 0.004" />
+              <site name="L_ball_touch" class="elipsoid_touch_site" pos="0.17000 -0.01000 -0.03100" size="0.080 0.055 0.004" />
+              <body name="L_elipsoid_toe_segment" pos="0.20000 0.00000 -0.01400">
+                <joint name="L_toe_hinge" type="hinge" axis="0 -1 0" range="-0.8 0.7" limited="true" damping="0.18" armature="0.0004" />
+                <inertial pos="0.05000 0.00000 0.00200" mass="0.12" diaginertia="0.00018 0.00045 0.00038" />
+                <geom name="L_toe_capsule" class="elipsoid_foot_contact" type="capsule" fromto="0.02500 0.02400 -0.01500  0.06300 -0.04400 -0.01500" size="0.016" rgba="0.82 0.12 0.12 0.90" />
+                <site name="L_toe_touch" class="elipsoid_touch_site" pos="0.04400 -0.01000 -0.03100" size="0.040 0.060 0.004" />
+              </body>
+            </body>
+            <body name="L_Toe" pos="0.1193 0.0264 -0.0558">
+              <joint name="L_Toe_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="500" damping="50" armature="0.02" range="-180.0000 180.0000" limited="true" />
+              <joint name="L_Toe_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="500" damping="50" armature="0.02" range="-180.0000 180.0000" limited="true" />
+              <joint name="L_Toe_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="500" damping="50" armature="0.02" range="-180.0000 180.0000" limited="true" />
+              <geom name="L_toe_inertial_visual" type="box" pos="0.0248 -0.0030 0.0055" size="0.0496 0.0478 0.02" quat="1.0000 0.0000 0.0000 0.0000" density="1000" conaffinity="0" condim="3" contype="0" margin="0.001" rgba="0.8 0.6 .4 0.12" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="R_Hip" pos="-0.0043 -0.0677 -0.0905">
+        <joint name="R_Hip_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+        <joint name="R_Hip_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+        <joint name="R_Hip_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+        <geom type="capsule" contype="1" conaffinity="1" density="2040.816327" fromto="-0.0018 -0.0077 -0.0765 -0.0071 -0.0306 -0.3061" size="0.0606" condim="3" margin="0.001" rgba="0.8 0.6 .4 1" />
+        <body name="R_Knee" pos="-0.0089 -0.0383 -0.3826">
+          <joint name="R_Knee_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+          <joint name="R_Knee_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+          <joint name="R_Knee_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+          <geom type="capsule" contype="1" conaffinity="1" density="1234.567901" fromto="-0.0085 0.0032 -0.0797 -0.0338 0.0126 -0.3187" size="0.0541" condim="3" margin="0.001" rgba="0.8 0.6 .4 1" />
+          <body name="R_Ankle" pos="-0.0423 0.0158 -0.3984">
+            <joint name="R_Ankle_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+            <joint name="R_Ankle_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+            <joint name="R_Ankle_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="800" damping="80" armature="0.02" range="-180.0000 180.0000" limited="true" />
+            <geom name="R_foot_inertial_visual" type="box" pos="0.0256 -0.0212 -0.0174" size="0.0865 0.0483 0.0478" quat="1.0000 0.0000 0.0000 0.0000" density="1000" conaffinity="0" condim="3" contype="0" margin="0.001" rgba="0.8 0.6 .4 0.18" />
+            <body name="R_elipsoid_foot_segment" pos="0.00000 -0.02400 -0.02500">
+              <inertial pos="0.00000 0.01000 0.02800" mass="0.55" diaginertia="0.0012 0.0026 0.0021" />
+              <geom name="R_heel_ellipsoid" class="elipsoid_foot_contact" pos="0.03000 0.00000 -0.01500" quat="0.70512 -0.05298 0.05298 0.70512" size="0.030 0.050 0.030" rgba="0.18 0.48 0.90 0.90" />
+              <geom name="R_ball_ellipsoid" class="elipsoid_foot_contact" pos="0.17000 0.01000 -0.01366" quat="0.85577 -0.08586 0.05093 0.50763" size="0.060 0.030 0.030" rgba="0.16 0.70 0.28 0.90" />
+              <site name="R_heel_touch" class="elipsoid_touch_site" pos="0.03000 0.00000 -0.03100" size="0.050 0.070 0.004" />
+              <site name="R_ball_touch" class="elipsoid_touch_site" pos="0.17000 0.01000 -0.03100" size="0.080 0.055 0.004" />
+              <body name="R_elipsoid_toe_segment" pos="0.20000 0.00000 -0.01400">
+                <joint name="R_toe_hinge" type="hinge" axis="0 1 0" range="-0.8 0.7" limited="true" damping="0.18" armature="0.0004" />
+                <inertial pos="0.05000 0.00000 0.00200" mass="0.12" diaginertia="0.00018 0.00045 0.00038" />
+                <geom name="R_toe_capsule" class="elipsoid_foot_contact" type="capsule" fromto="0.02500 -0.02400 -0.01500  0.06300 0.04400 -0.01500" size="0.016" rgba="0.82 0.12 0.12 0.90" />
+                <site name="R_toe_touch" class="elipsoid_touch_site" pos="0.04400 0.01000 -0.03100" size="0.040 0.060 0.004" />
+              </body>
+            </body>
+            <body name="R_Toe" pos="0.1233 -0.0254 -0.0481">
+              <joint name="R_Toe_x" type="hinge" pos="0 0 0" axis="1 0 0" stiffness="500" damping="50" armature="0.02" range="-180.0000 180.0000" limited="true" />
+              <joint name="R_Toe_y" type="hinge" pos="0 0 0" axis="0 1 0" stiffness="500" damping="50" armature="0.02" range="-180.0000 180.0000" limited="true" />
+              <joint name="R_Toe_z" type="hinge" pos="0 0 0" axis="0 0 1" stiffness="500" damping="50" armature="0.02" range="-180.0000 180.0000" limited="true" />
+              <geom name="R_toe_inertial_visual" type="box" pos="0.0227 0.0042 0.0045" size="0.0493 0.0479 0.0216" quat="1.0000 0.0000 0.0000 0.0000" density="1000" conaffinity="0" condim="3" contype="0" margin="0.001" rgba="0.8 0.6 .4 0.12" />
+            </body>
+          </body>
+        </body>
+      </body>
+      <joint type="free" name="Pelvis" limited="false" actuatorfrclimited="false" />
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="L_Hip_x" joint="L_Hip_x" gear="500" />
+    <motor name="L_Hip_y" joint="L_Hip_y" gear="500" />
+    <motor name="L_Hip_z" joint="L_Hip_z" gear="500" />
+    <motor name="L_Knee_x" joint="L_Knee_x" gear="500" />
+    <motor name="L_Knee_y" joint="L_Knee_y" gear="500" />
+    <motor name="L_Knee_z" joint="L_Knee_z" gear="500" />
+    <motor name="L_Ankle_x" joint="L_Ankle_x" gear="500" />
+    <motor name="L_Ankle_y" joint="L_Ankle_y" gear="500" />
+    <motor name="L_Ankle_z" joint="L_Ankle_z" gear="500" />
+    <motor name="L_Toe_x" joint="L_Toe_x" gear="500" />
+    <motor name="L_Toe_y" joint="L_Toe_y" gear="500" />
+    <motor name="L_Toe_z" joint="L_Toe_z" gear="500" />
+    <motor name="R_Hip_x" joint="R_Hip_x" gear="500" />
+    <motor name="R_Hip_y" joint="R_Hip_y" gear="500" />
+    <motor name="R_Hip_z" joint="R_Hip_z" gear="500" />
+    <motor name="R_Knee_x" joint="R_Knee_x" gear="500" />
+    <motor name="R_Knee_y" joint="R_Knee_y" gear="500" />
+    <motor name="R_Knee_z" joint="R_Knee_z" gear="500" />
+    <motor name="R_Ankle_x" joint="R_Ankle_x" gear="500" />
+    <motor name="R_Ankle_y" joint="R_Ankle_y" gear="500" />
+    <motor name="R_Ankle_z" joint="R_Ankle_z" gear="500" />
+    <motor name="R_Toe_x" joint="R_Toe_x" gear="500" />
+    <motor name="R_Toe_y" joint="R_Toe_y" gear="500" />
+    <motor name="R_Toe_z" joint="R_Toe_z" gear="500" />
+  </actuator>
+  <contact>
+    <exclude body1="R_Knee" body2="R_Toe" />
+    <exclude body1="R_Knee" body2="L_Ankle" />
+    <exclude body1="R_Knee" body2="L_Toe" />
+    <exclude body1="L_Knee" body2="L_Toe" />
+    <exclude body1="L_Knee" body2="R_Ankle" />
+    <exclude body1="L_Knee" body2="R_Toe" />
+  </contact>
+  <sensor>
+    <touch name="L_heel_force" site="L_heel_touch" />
+    <touch name="L_ball_force" site="L_ball_touch" />
+    <touch name="L_toe_force" site="L_toe_touch" />
+    <touch name="R_heel_force" site="R_heel_touch" />
+    <touch name="R_ball_force" site="R_ball_touch" />
+    <touch name="R_toe_force" site="R_toe_touch" />
+  </sensor>
+  <size njmax="700" nconmax="700" />
+</mujoco>

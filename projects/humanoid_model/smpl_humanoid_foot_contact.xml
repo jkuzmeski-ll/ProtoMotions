@@ -307,8 +307,26 @@
 
               <body name="L_bones_heel" pos="-0.070 0.000 0.000">
                 <joint
-                                    name="L_heel_ball"
-                                    type="ball"
+                                    name="L_heel_x"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="1 0 0"
+                                    damping="0.35"
+                                    armature="0.0006"
+                                />
+                <joint
+                                    name="L_heel_y"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 1 0"
+                                    damping="0.35"
+                                    armature="0.0006"
+                                />
+                <joint
+                                    name="L_heel_z"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 0 1"
                                     damping="0.35"
                                     armature="0.0006"
                                 />
@@ -339,8 +357,26 @@
 
               <body name="L_bones_lateral_metatarsal" pos="-0.032 0.028 0.000">
                 <joint
-                                    name="L_lateral_metatarsal_ball"
-                                    type="ball"
+                                    name="L_lateral_metatarsal_x"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="1 0 0"
+                                    damping="0.22"
+                                    armature="0.0005"
+                                />
+                <joint
+                                    name="L_lateral_metatarsal_y"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 1 0"
+                                    damping="0.22"
+                                    armature="0.0005"
+                                />
+                <joint
+                                    name="L_lateral_metatarsal_z"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 0 1"
                                     damping="0.22"
                                     armature="0.0005"
                                 />
@@ -376,8 +412,26 @@
 
                 <body name="L_bones_lateral_phalanges" pos="0.090 0.010 0.000">
                   <joint
-                                        name="L_lateral_phalanges_ball"
-                                        type="ball"
+                                        name="L_lateral_phalanges_x"
+                                        type="hinge"
+                                        pos="0 0 0"
+                                        axis="1 0 0"
+                                        damping="0.18"
+                                        armature="0.0004"
+                                    />
+                  <joint
+                                        name="L_lateral_phalanges_y"
+                                        type="hinge"
+                                        pos="0 0 0"
+                                        axis="0 1 0"
+                                        damping="0.18"
+                                        armature="0.0004"
+                                    />
+                  <joint
+                                        name="L_lateral_phalanges_z"
+                                        type="hinge"
+                                        pos="0 0 0"
+                                        axis="0 0 1"
                                         damping="0.18"
                                         armature="0.0004"
                                     />
@@ -409,8 +463,26 @@
 
               <body name="L_bones_medial_phalanges" pos="0.078 -0.006 0.000">
                 <joint
-                                    name="L_medial_phalanges_ball"
-                                    type="ball"
+                                    name="L_medial_phalanges_x"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="1 0 0"
+                                    damping="0.18"
+                                    armature="0.0004"
+                                />
+                <joint
+                                    name="L_medial_phalanges_y"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 1 0"
+                                    damping="0.18"
+                                    armature="0.0004"
+                                />
+                <joint
+                                    name="L_medial_phalanges_z"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 0 1"
                                     damping="0.18"
                                     armature="0.0004"
                                 />
@@ -698,8 +770,26 @@
 
               <body name="R_bones_heel" pos="-0.070 0.000 0.000">
                 <joint
-                                    name="R_heel_ball"
-                                    type="ball"
+                                    name="R_heel_x"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="1 0 0"
+                                    damping="0.35"
+                                    armature="0.0006"
+                                />
+                <joint
+                                    name="R_heel_y"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 1 0"
+                                    damping="0.35"
+                                    armature="0.0006"
+                                />
+                <joint
+                                    name="R_heel_z"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 0 1"
                                     damping="0.35"
                                     armature="0.0006"
                                 />
@@ -730,8 +820,26 @@
 
               <body name="R_bones_lateral_metatarsal" pos="-0.032 -0.028 0.000">
                 <joint
-                                    name="R_lateral_metatarsal_ball"
-                                    type="ball"
+                                    name="R_lateral_metatarsal_x"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="1 0 0"
+                                    damping="0.22"
+                                    armature="0.0005"
+                                />
+                <joint
+                                    name="R_lateral_metatarsal_y"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 1 0"
+                                    damping="0.22"
+                                    armature="0.0005"
+                                />
+                <joint
+                                    name="R_lateral_metatarsal_z"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 0 1"
                                     damping="0.22"
                                     armature="0.0005"
                                 />
@@ -767,8 +875,26 @@
 
                 <body name="R_bones_lateral_phalanges" pos="0.090 -0.010 0.000">
                   <joint
-                                        name="R_lateral_phalanges_ball"
-                                        type="ball"
+                                        name="R_lateral_phalanges_x"
+                                        type="hinge"
+                                        pos="0 0 0"
+                                        axis="1 0 0"
+                                        damping="0.18"
+                                        armature="0.0004"
+                                    />
+                  <joint
+                                        name="R_lateral_phalanges_y"
+                                        type="hinge"
+                                        pos="0 0 0"
+                                        axis="0 1 0"
+                                        damping="0.18"
+                                        armature="0.0004"
+                                    />
+                  <joint
+                                        name="R_lateral_phalanges_z"
+                                        type="hinge"
+                                        pos="0 0 0"
+                                        axis="0 0 1"
                                         damping="0.18"
                                         armature="0.0004"
                                     />
@@ -800,8 +926,26 @@
 
               <body name="R_bones_medial_phalanges" pos="0.078 0.006 0.000">
                 <joint
-                                    name="R_medial_phalanges_ball"
-                                    type="ball"
+                                    name="R_medial_phalanges_x"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="1 0 0"
+                                    damping="0.18"
+                                    armature="0.0004"
+                                />
+                <joint
+                                    name="R_medial_phalanges_y"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 1 0"
+                                    damping="0.18"
+                                    armature="0.0004"
+                                />
+                <joint
+                                    name="R_medial_phalanges_z"
+                                    type="hinge"
+                                    pos="0 0 0"
+                                    axis="0 0 1"
                                     damping="0.18"
                                     armature="0.0004"
                                 />
