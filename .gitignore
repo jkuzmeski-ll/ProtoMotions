@@ -13,9 +13,22 @@ exps/*
 **/.DS_Store
 wandb/*
 newton_source/*
+protomotions/data/assets/mjcf/ms_human_700/
+!protomotions/data/assets/mjcf/ms_human_700/
+protomotions/data/assets/mjcf/ms_human_700/*
+!protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-S003-LowerOnly.xml
+!protomotions/data/assets/mjcf/ms_human_700/MS-Human-700-Locomotion-Simple.xml
+data/ms_human_700/*
 data/amass/*.pkl
 .cursor/
 renders/
 .envrc
 projects/data/S001/*
 .agents/*
+c3dproto/
+.claude/*
+!.claude/commands/
+.venv_newton/
+
+# Large c3d motion capture source files (too big for GitHub)
+*.c3d

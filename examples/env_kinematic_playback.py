@@ -108,6 +108,17 @@ def create_parser():
             "Omit this flag to use the default (first num_envs scenes)."
         ),
     )
+    parser.add_argument(
+        "--marker-keys",
+        nargs="+",
+        default=("marker_targets", "marker_reconstructed"),
+        help="Motion-file marker tensors to render as overlays during playback.",
+    )
+    parser.add_argument(
+        "--no-motion-markers",
+        action="store_true",
+        help="Disable marker overlays stored in the motion file.",
+    )
 
     return parser
 
@@ -257,7 +268,10 @@ def main():
     
     # Add kinematic replay control component (replaces any existing control components)
     env_config.control_components = {
-        "kinematic_replay": KinematicReplayControlConfig(),
+        "kinematic_replay": KinematicReplayControlConfig(
+            show_motion_markers=not args.no_motion_markers,
+            marker_keys=tuple(args.marker_keys),
+        ),
     }
     
     # Disable terminations - kinematic replay should run indefinitely
