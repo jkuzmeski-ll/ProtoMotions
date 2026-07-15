@@ -694,12 +694,22 @@ def main():
     from protomotions.utils.fabric_config import FabricConfig
     from lightning.fabric import Fabric
 
-    fabric_config = FabricConfig(
+    fabric_kwargs = dict(
         devices=args.ngpu,
         num_nodes=args.nodes,
         loggers=loggers,
         callbacks=callbacks,
     )
+    # Windows has no NCCL backend, so DDP's default (cuda->nccl) process-group init
+    # fails. gloo works on Windows and still initializes a real (world_size=1) process
+    # group, so the agent's torch.distributed collectives keep working. NCCL is retained
+    # on other platforms for multi-GPU throughput.
+    if sys.platform == "win32":
+        from lightning.fabric.strategies.ddp import DDPStrategy
+
+        fabric_kwargs["strategy"] = DDPStrategy(process_group_backend="gloo")
+
+    fabric_config = FabricConfig(**fabric_kwargs)
     print(fabric_config.as_loggable_dict())
     fabric: Fabric = Fabric(**fabric_config.as_kwargs())
     fabric.launch()

@@ -1,0 +1,250 @@
+<mujoco model="FullBodyModel_MuscleActuatedLowerLimb_TorqueActuatedUpperBody">
+  <compiler angle="radian" autolimits="true" balanceinertia="true"/>
+  <worldbody>
+    <body name="pelvis" pos="0 0 0" quat="1 0 0 0">
+      <freejoint name="ground_pelvis"/>
+      <inertial pos="-0.08211936314120759 0.0 0.0" mass="11.777" fullinertia="0.1028 0.0871 0.0579 0.0 0.0 0.0"/>
+      <site name="mk_RASI" pos="0.011069817918477859 0.019547199710195234 0.12346557725725221" size="0.01" group="4"/>
+      <site name="mk_LASI" pos="0.011069817918477859 0.019547199710195234 -0.12346557725725221" size="0.01" group="4"/>
+      <site name="mk_RPSI" pos="-0.18003537888100674 0.037836916526017235 0.043249089056672296" size="0.01" group="4"/>
+      <site name="mk_LPSI" pos="-0.18003537888100674 0.037836916526017235 -0.043249089056672296" size="0.01" group="4"/>
+      <geom type="capsule" fromto="0 0 0 -0.06536561923811313 -0.08485198794648836 0.0742538804559667" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+      <geom type="capsule" fromto="0 0 0 -0.06536561923811313 -0.08485198794648836 -0.0742538804559667" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+      <geom type="capsule" fromto="0 0 0 -0.11696492034398309 0.08810596276772585 0.0" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+      <body name="femur_r__q0" pos="-0.06536561923811313 -0.08485198794648836 0.0742538804559667" quat="1.0 0.0 0.0 0.0">
+        <joint name="hip_r__rotation1" type="hinge" axis="0.0 0.0 1.0" pos="0.0 0.0 0.0" range="-0.52359878 2.0943951"/>
+        <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+        <body name="femur_r__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+          <joint name="hip_r__rotation2" type="hinge" axis="1.0 0.0 0.0" pos="0.0 0.0 0.0" range="-0.87266463 0.52359878"/>
+          <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+          <body name="femur_r" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+            <joint name="hip_r__rotation3" type="hinge" axis="0.0 1.0 0.0" pos="0.0 0.0 0.0" range="-0.6981317 0.6981317"/>
+            <inertial pos="0.0 -0.16930543856134628 0.0" mass="9.3014" fullinertia="0.1339 0.0351 0.1412 0.0 0.0 0.0"/>
+            <site name="mk_RHJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+            <site name="mk_RTH1" pos="0.01325007411194696 -0.1493871516717761 0.07038969903784054" size="0.01" group="4"/>
+            <site name="mk_RTH2" pos="0.05888921827531982 -0.22906029923005672 0.005169243523091414" size="0.01" group="4"/>
+            <site name="mk_RTH3" pos="0.007361152284414978 -0.2987743033435522 0.06599034284797549" size="0.01" group="4"/>
+            <site name="mk_RLFC" pos="0.0 -0.40234939516931706 0.05499195237331292" size="0.01" group="4"/>
+            <site name="mk_RMFC" pos="0.0 -0.40234939516931706 -0.05499195237331292" size="0.01" group="4"/>
+            <geom type="capsule" fromto="0 0 0 0.0006137823436124521 -0.402660920917156 -0.0014515349347104568" size="0.045" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+            <body name="tibia_r__q0" pos="0.0006137823436124521 -0.402660920917156 -0.0014515349347104568" quat="1.0 0.0 0.0 0.0">
+              <joint name="walker_knee_r__translation1" type="slide" axis="-0.12429325076272277 0.9897616355976264 -0.07016475264651392" pos="-0.0065689545417041695 -0.0036322950562959195 -0.0015730224458217533" limited="false"/>
+              <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+              <body name="tibia_r__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                <joint name="walker_knee_r__translation2" type="slide" axis="0.9922455279893354 0.12398210691841027 -0.008789160894930013" pos="-0.0065689545417041695 -0.0036322950562959195 -0.0015730224458217533" limited="false"/>
+                <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                <body name="tibia_r__q2" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                  <joint name="walker_knee_r__rotation1" type="hinge" axis="-3.983727274144818e-10 -0.07071309541508877 -0.9974966958024556" pos="-0.0065689545417041695 -0.0036322950562959195 -0.0015730224458217533" range="0.0 2.0944"/>
+                  <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                  <body name="tibia_r__q3" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                    <joint name="walker_knee_r__rotation2" type="hinge" axis="0.9922455279893354 0.12398210691841027 -0.008789160894930013" pos="-0.0065689545417041695 -0.0036322950562959195 -0.0015730224458217533" limited="false"/>
+                    <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                    <body name="tibia_r" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                      <joint name="walker_knee_r__rotation3" type="hinge" axis="-0.12429325076272277 0.9897616355976264 -0.07016475264651392" pos="-0.0065689545417041695 -0.0036322950562959195 -0.0015730224458217533" limited="false"/>
+                      <inertial pos="0.0 -0.1918494644705353 0.0" mass="3.7075" fullinertia="0.0504 0.0051 0.0511 0.0 0.0 0.0"/>
+                      <site name="mk_RKJC" pos="0.0014056250802505356 -0.0024548921832892815 -0.008954554812347925" size="0.01" group="4"/>
+                      <site name="mk_RTB1" pos="-0.0013494163176538043 -0.160804172448126 0.05216716827107483" size="0.01" group="4"/>
+                      <site name="mk_RTB2" pos="0.030016145091799465 -0.23645369427381613 -0.004149893712070362" size="0.01" group="4"/>
+                      <site name="mk_RTB3" pos="0.009240340540551659 -0.3033790492363308 0.05864544753173075" size="0.01" group="4"/>
+                      <site name="mk_RLMAL" pos="-0.004060153322502992 -0.399523683910788 0.056151373054240415" size="0.01" group="4"/>
+                      <site name="mk_RMMAL" pos="0.00487218398700359 -0.399523683910788 -0.04025947502002143" size="0.01" group="4"/>
+                      <site name="mk_R_tibial_plateau" pos="-0.0065689545417041695 -0.017468885356181577 -0.0015730224458217533" size="0.01" group="4"/>
+                      <geom type="capsule" fromto="0 0 0 -0.008120306645005983 -0.4110325966160371 0.0" size="0.045" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                      <body name="talus_r" pos="-0.008120306645005983 -0.4110325966160371 0.0" quat="1.0 0.0 0.0 0.0">
+                        <joint name="ankle_r__ankle_angle_r" type="hinge" axis="-0.10501404020671826 -0.17402206034255918 0.9791263319273935" pos="0.0 0.0 0.0" range="-0.6981317 0.52359878"/>
+                        <inertial pos="0.0 0.0 0.0" mass="0.1" fullinertia="0.001 0.001 0.001 0.0 0.0 0.0"/>
+                        <site name="mk_RAJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+                        <geom type="capsule" fromto="0 0 0 -0.046179293839488 -0.059430459932867434 0.007926145294224633" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                        <body name="calcn_r" pos="-0.046179293839488 -0.059430459932867434 0.007926145294224633" quat="1.0 0.0 0.0 0.0">
+                          <inertial pos="0.10557999269160981 0.032877070812888064 0.0" mass="1.25" fullinertia="0.0014 0.0039 0.0041 0.0 0.0 0.0"/>
+                          <site name="mk_RCAL" pos="-0.026394998172902452 0.021918047208592042 -0.0051469796242282085" size="0.01" group="4"/>
+                          <site name="mk_RTOE" pos="0.2164389850178001 0.03258205389746042 -0.03088187774536925" size="0.01" group="4"/>
+                          <site name="mk_RMT5" pos="0.1530909894028342 0.02729892779830139 0.060734359565892855" size="0.01" group="4"/>
+                          <geom type="capsule" fromto="0 0 0 0.18877702693259832 -0.0021918047208592042 0.001111747598833293" size="0.022655162872723542" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                          <body name="toes_r" pos="0.18877702693259832 -0.0021918047208592042 0.001111747598833293" quat="1.0 0.0 0.0 0.0">
+                            <inertial pos="0.0346 0.006 -0.0175" mass="0.2166" fullinertia="0.0001 0.0002 0.001 0.0 0.0 0.0"/>
+                            <geom type="sphere" size="0.035" pos="0 0 0" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="femur_l__q0" pos="-0.06536561923811313 -0.08485198794648836 -0.0742538804559667" quat="1.0 0.0 0.0 0.0">
+        <joint name="hip_l__rotation1" type="hinge" axis="0.0 0.0 1.0" pos="0.0 0.0 0.0" range="-0.52359878 2.0943951"/>
+        <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+        <body name="femur_l__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+          <joint name="hip_l__rotation2" type="hinge" axis="-1.0 0.0 0.0" pos="0.0 0.0 0.0" range="-0.87266463 0.52359878"/>
+          <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+          <body name="femur_l" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+            <joint name="hip_l__rotation3" type="hinge" axis="0.0 -1.0 0.0" pos="0.0 0.0 0.0" range="-0.6981317 0.6981317"/>
+            <inertial pos="0.0 -0.17342683899056166 0.0" mass="9.3014" fullinertia="0.1339 0.0351 0.1412 0.0 0.0 0.0"/>
+            <site name="mk_LHJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+            <site name="mk_LTH1" pos="0.0160304833013493 -0.15302368146226028 -0.06993823235029985" size="0.01" group="4"/>
+            <site name="mk_LTH2" pos="0.07124659245044133 -0.23463631157546577 -0.005136088938225145" size="0.01" group="4"/>
+            <site name="mk_LTH3" pos="0.008905824056305167 -0.30604736292452056 -0.0655670928284061" size="0.01" group="4"/>
+            <site name="mk_LLFC" pos="0.0 -0.4121437820716877 -0.054639244023671756" size="0.01" group="4"/>
+            <site name="mk_LMFC" pos="0.0 -0.4121437820716877 0.054639244023671756" size="0.01" group="4"/>
+            <geom type="capsule" fromto="0 0 0 0.00045097765451462997 -0.41260141734090366 0.0014782380482505218" size="0.045" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+            <body name="tibia_l__q0" pos="0.00045097765451462997 -0.41260141734090366 0.0014782380482505218" quat="1.0 0.0 0.0 0.0">
+              <joint name="walker_knee_l__translation1" type="slide" axis="-0.12429325076272277 0.9897616355976264 0.07016475264651392" pos="-0.00765578931606551 -0.003582189921387634 0.0015269203730514241" limited="false"/>
+              <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+              <body name="tibia_l__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                <joint name="walker_knee_l__translation2" type="slide" axis="-0.9922455279893354 -0.12398210691841027 -0.008789160894930013" pos="-0.00765578931606551 -0.003582189921387634 0.0015269203730514241" limited="false"/>
+                <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                <body name="tibia_l__q2" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                  <joint name="walker_knee_l__rotation1" type="hinge" axis="3.983727274144818e-10 0.07071309541508877 -0.9974966958024556" pos="-0.00765578931606551 -0.003582189921387634 0.0015269203730514241" range="0.0 2.0944"/>
+                  <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                  <body name="tibia_l__q3" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                    <joint name="walker_knee_l__rotation2" type="hinge" axis="-0.9922455279893354 -0.12398210691841027 -0.008789160894930013" pos="-0.00765578931606551 -0.003582189921387634 0.0015269203730514241" limited="false"/>
+                    <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                    <body name="tibia_l" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                      <joint name="walker_knee_l__rotation3" type="hinge" axis="-0.12429325076272277 0.9897616355976264 0.07016475264651392" pos="-0.00765578931606551 -0.003582189921387634 0.0015269203730514241" limited="false"/>
+                      <inertial pos="0.0 -0.18920302657097185 0.0" mass="3.7075" fullinertia="0.0504 0.0051 0.0511 0.0 0.0 0.0"/>
+                      <site name="mk_LKJC" pos="0.0016381860162765001 -0.0024210285510340213 0.008692115113104406" size="0.01" group="4"/>
+                      <site name="mk_LTB1" pos="-0.0015726775032512783 -0.15858598404948174 -0.05063825519405976" size="0.01" group="4"/>
+                      <site name="mk_LTB2" pos="0.034982321988127923 -0.23319197019371518 0.00402826880937989" size="0.01" group="4"/>
+                      <site name="mk_LTB3" pos="0.010769156634901895 -0.29919413365135217 -0.05692666933060727" size="0.01" group="4"/>
+                      <site name="mk_LLMAL" pos="-0.004731906459493069 -0.3940125159656875 -0.05450569107838778" size="0.01" group="4"/>
+                      <site name="mk_LMMAL" pos="0.005678287751391682 -0.3940125159656875 0.03907955209393841" size="0.01" group="4"/>
+                      <site name="mk_L_tibial_plateau" pos="-0.00765578931606551 -0.017227913506730166 0.0015269203730514241" size="0.01" group="4"/>
+                      <geom type="capsule" fromto="0 0 0 -0.009463812918986137 -0.4053626707465921 0.0" size="0.045" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                      <body name="talus_l" pos="-0.009463812918986137 -0.4053626707465921 0.0" quat="1.0 0.0 0.0 0.0">
+                        <joint name="ankle_l__ankle_angle_l" type="hinge" axis="0.10501404020671826 0.17402206034255918 0.9791263319273935" pos="0.0 0.0 0.0" range="-0.6981317 0.52359878"/>
+                        <inertial pos="0.0 0.0 0.0" mass="0.1" fullinertia="0.001 0.001 0.001 0.0 0.0 0.0"/>
+                        <site name="mk_LAJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+                        <geom type="capsule" fromto="0 0 0 -0.043221101496980524 -0.05815769385363808 -0.00820054395196414" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                        <body name="calcn_l" pos="-0.043221101496980524 -0.05815769385363808 -0.00820054395196414" quat="1.0 0.0 0.0 0.0">
+                          <inertial pos="0.10572882711234913 0.030736481532788674 0.0" mass="1.25" fullinertia="0.0014 0.0039 0.0041 0.0 0.0 0.0"/>
+                          <site name="mk_LCAL" pos="-0.026432206778087282 0.020490987688525784 0.005278425527574673" size="0.01" group="4"/>
+                          <site name="mk_LTOE" pos="0.21674409558031568 0.030459853198993577 0.031670553165448034" size="0.01" group="4"/>
+                          <site name="mk_LMT5" pos="0.15330679931290622 0.02552050061667444 -0.06228542122538114" size="0.01" group="4"/>
+                          <geom type="capsule" fromto="0 0 0 0.1890431428768802 -0.0020490987688525785 -0.0011401399139561294" size="0.02268692230663324" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                          <body name="toes_l" pos="0.1890431428768802 -0.0020490987688525785 -0.0011401399139561294" quat="1.0 0.0 0.0 0.0">
+                            <inertial pos="0.0346 0.006 0.0175" mass="0.2166" fullinertia="0.0001 0.0002 0.001 0.0 0.0 0.0"/>
+                            <geom type="sphere" size="0.035" pos="0 0 0" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="torso__q0" pos="-0.11696492034398309 0.08810596276772585 0.0" quat="1.0 0.0 0.0 0.0">
+        <joint name="back__rotation1" type="hinge" axis="0.0 0.0 1.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+        <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+        <body name="torso__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+          <joint name="back__rotation2" type="hinge" axis="1.0 0.0 0.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+          <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+          <body name="torso" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+            <joint name="back__rotation3" type="hinge" axis="0.0 1.0 0.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+            <inertial pos="-0.0314758662068047 0.31365772362815236 0.0" mass="26.8266" fullinertia="1.4745 0.7555 1.4314 0.0 0.0 0.0"/>
+            <site name="mk_RACR" pos="-0.0031475866206804697 0.4165766641936398 0.1610212678082485" size="0.01" group="4"/>
+            <site name="mk_LACR" pos="-0.0031475866206804697 0.4165766641936398 -0.1610212678082485" size="0.01" group="4"/>
+            <site name="mk_C7" pos="-0.08918162091927997 0.4263784680570196 0.002049008019111332" size="0.01" group="4"/>
+            <site name="mk_CLAV" pos="0.041967821609072926 0.37246854680843094 0.02105662732877096" size="0.01" group="4"/>
+            <site name="mk_RASH" pos="0.05245977701134116 0.36413701352455813 0.21056627328770958" size="0.01" group="4"/>
+            <site name="mk_RPSH" pos="-0.05245977701134116 0.36413701352455813 0.21056627328770958" size="0.01" group="4"/>
+            <site name="mk_LASH" pos="0.05245977701134116 0.36413701352455813 -0.21056627328770958" size="0.01" group="4"/>
+            <site name="mk_LPSH" pos="-0.060853341333155744 0.36413701352455813 -0.21056627328770958" size="0.01" group="4"/>
+            <geom type="capsule" fromto="0 0 0 0.003310211929415627 0.36413701352455813 0.21056627328770958" size="0.045" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+            <geom type="capsule" fromto="0 0 0 0.003310211929415627 0.36413701352455813 -0.21056627328770958" size="0.045" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+            <body name="humerus_r__q0" pos="0.003310211929415627 0.36413701352455813 0.21056627328770958" quat="1.0 0.0 0.0 0.0">
+              <joint name="acromial_r__rotation1" type="hinge" axis="0.0 0.0 1.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+              <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+              <body name="humerus_r__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                <joint name="acromial_r__rotation2" type="hinge" axis="1.0 0.0 0.0" pos="0.0 0.0 0.0" range="-2.0943951 1.57079633"/>
+                <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                <body name="humerus_r" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                  <joint name="acromial_r__rotation3" type="hinge" axis="0.0 1.0 0.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+                  <inertial pos="0.0 -0.1935180312662116 0.0" mass="2.0325" fullinertia="0.011946 0.004121 0.013409 0.0 0.0 0.0"/>
+                  <site name="mk_RSJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+                  <site name="mk_RUA1" pos="0.0 -0.05881935516474316 0.019092992114377563" size="0.01" group="4"/>
+                  <site name="mk_RUA2" pos="0.0 -0.23527742065897264 0.019092992114377563" size="0.01" group="4"/>
+                  <site name="mk_RUA3" pos="0.03096018561210519 -0.1529303234283322 0.019092992114377563" size="0.01" group="4"/>
+                  <site name="mk_RLEL" pos="0.015480092806052595 -0.3293883889225617 0.038185984228755125" size="0.01" group="4"/>
+                  <site name="mk_RMEL" pos="0.0023220139209078894 -0.33644671154233086 -0.04391388186306839" size="0.01" group="4"/>
+                  <geom type="capsule" fromto="0 0 0 0.013564689322850355 -0.33676786522153035 -0.009159862966872634" size="0.04045984657186485" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                  <body name="ulna_r" pos="0.013564689322850355 -0.33676786522153035 -0.009159862966872634" quat="1.0 0.0 0.0 0.0">
+                    <joint name="elbow_r__elbow_flex_r" type="hinge" axis="0.22604695995284765 0.022268999995354814 0.973861829796857" pos="0.0 0.0 0.0" range="0.0 2.618"/>
+                    <inertial pos="0.0 -0.11518044517125682 0.0" mass="0.6075" fullinertia="0.002962 0.000618 0.003213 0.0 0.0 0.0"/>
+                    <site name="mk_RFAsuperior" pos="0.004701168282260545 -0.07650781631591755 0.038368896753026634" size="0.01" group="4"/>
+                    <site name="mk_REJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+                    <geom type="capsule" fromto="0 0 0 -0.006868183948148169 -0.012430218214831259 0.02208262945853877" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                    <body name="radius_r" pos="-0.006868183948148169 -0.012430218214831259 0.02208262945853877" quat="1.0 0.0 0.0 0.0">
+                      <joint name="radioulnar_r__pro_sup_r" type="hinge" axis="0.05639802978958987 0.9984064562751389 0.001951999992715068" pos="0.0 0.0 0.0" range="0.0 1.57079633"/>
+                      <inertial pos="0.0 -0.11832223853454497 0.0" mass="0.6075" fullinertia="0.002962 0.000618 0.003213 0.0 0.0 0.0"/>
+                      <site name="mk_RFAradius" pos="0.0004836821139423913 -0.2208878130700902 0.050719111261448596" size="0.01" group="4"/>
+                      <site name="mk_RFAulna" pos="-0.021282013013465217 -0.2208878130700902 -0.02231640895503738" size="0.01" group="4"/>
+                      <geom type="capsule" fromto="0 0 0 -0.008509903112702432 -0.23153067876561395 0.013805742085366307" size="0.027851757562541875" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                      <body name="hand_r" pos="-0.008509903112702432 -0.23153067876561395 0.013805742085366307" quat="1.0 0.0 0.0 0.0">
+                        <inertial pos="0.0 -0.068095 0.0" mass="0.4575" fullinertia="0.000892 0.000547 0.00134 0.0 0.0 0.0"/>
+                        <geom type="sphere" size="0.035" pos="0 0 0" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+            <body name="humerus_l__q0" pos="0.003310211929415627 0.36413701352455813 -0.21056627328770958" quat="1.0 0.0 0.0 0.0">
+              <joint name="acromial_l__rotation1" type="hinge" axis="0.0 0.0 1.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+              <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+              <body name="humerus_l__q1" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                <joint name="acromial_l__rotation2" type="hinge" axis="-1.0 0.0 0.0" pos="0.0 0.0 0.0" range="-2.0943951 1.57079633"/>
+                <inertial pos="0 0 0" mass="1e-06" diaginertia="1e-09 1e-09 1e-09"/>
+                <body name="humerus_l" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0">
+                  <joint name="acromial_l__rotation3" type="hinge" axis="0.0 -1.0 0.0" pos="0.0 0.0 0.0" range="-1.57079633 1.57079633"/>
+                  <inertial pos="0.0 -0.16903290574683874 0.0" mass="2.0325" fullinertia="0.011946 0.004121 0.013409 0.0 0.0 0.0"/>
+                  <site name="mk_LSJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+                  <site name="mk_LUA1" pos="0.0 -0.05137715825547371 -0.017964471712277767" size="0.01" group="4"/>
+                  <site name="mk_LUA2" pos="0.0 -0.20550863302189484 -0.017964471712277767" size="0.01" group="4"/>
+                  <site name="mk_LUA3" pos="0.031145528223769977 -0.13358061146423164 -0.017964471712277767" size="0.01" group="4"/>
+                  <site name="mk_LLEL" pos="0.015572764111884988 -0.2877120862306528 -0.035928943424555534" size="0.01" group="4"/>
+                  <site name="mk_LMEL" pos="0.002335966525996455 -0.2938773452213096 0.041318284938238865" size="0.01" group="4"/>
+                  <geom type="capsule" fromto="0 0 0 0.013645894099107752 -0.2941578645053845 0.008618455303965258" size="0.03535203614009531" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                  <body name="ulna_l" pos="0.013645894099107752 -0.2941578645053845 0.008618455303965258" quat="1.0 0.0 0.0 0.0">
+                    <joint name="elbow_l__elbow_flex_l" type="hinge" axis="-0.22604695995284765 -0.022268999995354814 0.973861829796857" pos="0.0 0.0 0.0" range="0.0 2.618"/>
+                    <inertial pos="0.0 -0.11230689589607605 0.0" mass="0.6075" fullinertia="0.002962 0.000618 0.003213 0.0 0.0 0.0"/>
+                    <site name="mk_LFAsuperior" pos="0.004517820763367803 -0.0745990810284876 -0.038540731303352366" size="0.01" group="4"/>
+                    <site name="mk_LEJC" pos="0.0 0.0 0.0" size="0.01" group="4"/>
+                    <geom type="capsule" fromto="0 0 0 -0.006600321916715758 -0.01212010615988601 -0.022181526195847703" size="0.018" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                    <body name="radius_l" pos="-0.006600321916715758 -0.01212010615988601 -0.022181526195847703" quat="1.0 0.0 0.0 0.0">
+                      <joint name="radioulnar_l__pro_sup_l" type="hinge" axis="-0.05639802978958987 -0.9984064562751389 0.001951999992715068" pos="0.0 0.0 0.0" range="0.0 1.57079633"/>
+                      <inertial pos="0.0 -0.1174484078196862 0.0" mass="0.6075" fullinertia="0.002962 0.000618 0.003213 0.0 0.0 0.0"/>
+                      <site name="mk_LFAradius" pos="0.00048295211509767096 -0.2192565173982941 -0.051017216387044165" size="0.01" group="4"/>
+                      <site name="mk_LFAulna" pos="-0.02124989306429752 -0.2192565173982941 0.02244757521029943" size="0.01" group="4"/>
+                      <geom type="capsule" fromto="0 0 0 -0.008497059513028421 -0.22982078364324923 -0.013886886300553422" size="0.027647603701818544" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                      <body name="hand_l" pos="-0.008497059513028421 -0.22982078364324923 -0.013886886300553422" quat="1.0 0.0 0.0 0.0">
+                        <inertial pos="0.0 -0.068095 0.0" mass="0.4575" fullinertia="0.000892 0.000547 0.00134 0.0 0.0 0.0"/>
+                        <geom type="sphere" size="0.035" pos="0 0 0" group="0" contype="0" conaffinity="0" density="0" rgba="0.78 0.80 0.86 1"/>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <joint joint1="walker_knee_r__translation1" joint2="walker_knee_r__rotation1" polycoef="1.8562418577197562e-07 0.0031286687777287692 -0.0023085071923163425 0.0005622880709337352 3.185530459856582e-07"/>
+    <joint joint1="walker_knee_r__translation2" joint2="walker_knee_r__rotation1" polycoef="1.0768654732416479e-07 0.005879044330263719 -0.0012549899459747005 -3.489946772384726e-06 8.326672937348639e-07"/>
+    <joint joint1="walker_knee_r__rotation2" joint2="walker_knee_r__rotation1" polycoef="7.199583755658508e-06 0.07905592402886909 -0.03276820061068361 -0.025274248360380974 0.01084544605942957"/>
+    <joint joint1="walker_knee_r__rotation3" joint2="walker_knee_r__rotation1" polycoef="8.624156722979438e-08 0.36949847537980146 -0.1694786374106804 0.025165000201962794 1.1819469408747028e-07"/>
+    <joint joint1="walker_knee_l__translation1" joint2="walker_knee_l__rotation1" polycoef="1.8562418577197562e-07 0.0031286687777287692 -0.0023085071923163425 0.0005622880709337352 3.185530459856582e-07"/>
+    <joint joint1="walker_knee_l__translation2" joint2="walker_knee_l__rotation1" polycoef="-1.0768654732416479e-07 -0.005879044330263719 0.0012549899459747005 3.489946772384726e-06 -8.326672937348639e-07"/>
+    <joint joint1="walker_knee_l__rotation2" joint2="walker_knee_l__rotation1" polycoef="7.199583755658508e-06 0.07905592402886909 -0.03276820061068361 -0.025274248360380974 0.01084544605942957"/>
+    <joint joint1="walker_knee_l__rotation3" joint2="walker_knee_l__rotation1" polycoef="-8.624156722979438e-08 -0.36949847537980146 0.1694786374106804 -0.025165000201962794 -1.1819469408747028e-07"/>
+  </equality>
+</mujoco>

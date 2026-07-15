@@ -1,0 +1,282 @@
+# SPDX-License-Identifier: MIT
+#
+# Milestone M8 (Newton imitation env) bridge: turn a fitted biomech subject into a
+# runnable ProtoMotions setup on the Newton simulator. This is the M3->train handoff the
+# motion exporter flagged ("wiring this clip to a concrete ProtoMotions robot ... needs
+# that robot's config; this module produces the clip").
+#
+# Three artifacts, all Windows-native and testable without launching training:
+#   1. the fitted skeleton MJCF written into ProtoMotions' asset tree,
+#   2. a ProtoMotions ``.motion`` clip whose ``rigid_body_*`` arrays align 1:1 with the
+#      simulator's body set, and
+#   3. a validated ``RobotConfig`` for the fitted skeleton.
+#
+# The body-set crux (learned here): the M3 MJCF splits every multi-DOF joint into a chain
+# of massless dummy bodies (``<body>__q0`` ...), so ProtoMotions' ``extract_kinematic_info``
+# reports MORE bodies (e.g. 38) than the 20 anatomical bodies ``build_motion`` emits. A
+# mimic env needs the clip's body order to match the sim body order exactly. We therefore
+# build the clip's body transforms with **MuJoCo forward kinematics on the exact exported
+# MJCF** (``mj_kinematics`` -> ``xpos``/``xmat`` for every sim body incl. dummies), which
+# is bit-exact vs the Warp skeleton (validated in M3) and guaranteed to align with the
+# robot's ``kinematic_info``. Frames are converted OpenSim Y-up -> ProtoMotions Z-up.
+
+"""Biomech fit -> runnable ProtoMotions Newton imitation setup (M8 bridge)."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+from biomech.export.motion import (
+    MotionExportResult,
+    R_OS2PM,
+    _angular_velocity,
+    _finite_diff_lin,
+    _matrix_to_quat_xyzw,
+)
+
+# Default ProtoMotions asset root (matches RobotAssetConfig.asset_root).
+PM_ASSET_ROOT = "protomotions/data/assets"
+_ASSET_SUBDIR = "mjcf"
+
+# Semantic body maps for the Rajagopal2015 skeleton (grounded in its body names).
+# The model has no dedicated head body, so the topmost trunk body ('torso') stands in for
+# both head and torso semantics (documented, not invented anatomy).
+RAJAGOPAL_BODY_MAP = {
+    "all_left_foot_bodies": ["calcn_l", "toes_l", "talus_l"],
+    "all_right_foot_bodies": ["calcn_r", "toes_r", "talus_r"],
+    "all_left_hand_bodies": ["hand_l"],
+    "all_right_hand_bodies": ["hand_r"],
+    "head_body_name": ["torso"],
+    "torso_body_name": ["torso"],
+}
+
+
+@dataclass
+class ProtoMotionsBundle:
+    """Paths + metadata for a ProtoMotions-ready biomech subject."""
+
+    asset_path: Path  # written MJCF (absolute)
+    asset_file_name: str  # relative to the ProtoMotions asset root
+    motion_path: Optional[Path]  # written .motion clip (if requested)
+    body_names: list[str]  # sim body order of the motion clip
+    dof_names: list[str]
+    fps: float
+
+
+# ---------------------------------------------------------------------------
+# 1. asset
+# ---------------------------------------------------------------------------
+def write_biomech_asset(
+    spec,
+    asset_file_name: str = "mjcf/biomech_rajagopal.xml",
+    group_scales: Optional[np.ndarray] = None,
+    coupled_knee: str = "coupled",
+    asset_root: str = PM_ASSET_ROOT,
+    repo_root: Optional[str | Path] = None,
+    visual_geoms: bool = True,
+) -> Path:
+    """Export the fitted skeleton MJCF into the ProtoMotions asset tree.
+
+    Returns the absolute path written. ``asset_file_name`` is the path relative to
+    ``asset_root`` used by :class:`RobotAssetConfig`. ``visual_geoms`` (default True) adds
+    non-colliding capsule/sphere bones so the robot is visible in the renderer.
+    """
+    from biomech.export.mjcf import export_mjcf
+
+    res = export_mjcf(
+        spec,
+        group_scales=group_scales,
+        coupled_knee=coupled_knee,
+        visual_geoms=visual_geoms,
+    )
+    root = Path(repo_root) if repo_root is not None else Path.cwd()
+    out = root / asset_root / asset_file_name
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(res.xml)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 2. sim-body-aligned motion clip (MuJoCo FK over the full body set)
+# ---------------------------------------------------------------------------
+def build_simbody_motion(
+    spec,
+    q_t: np.ndarray,
+    fps: float,
+    group_scales: Optional[np.ndarray] = None,
+    coupled_knee: str = "coupled",
+    mjcf_xml: Optional[str] = None,
+    belt_speed: Optional[np.ndarray] = None,
+) -> MotionExportResult:
+    """Build a ProtoMotions motion clip aligned to the **simulator** body set.
+
+    Unlike :func:`biomech.export.motion.build_motion` (which emits the 20 anatomical
+    bodies), this emits every body MuJoCo sees in the exported MJCF -- including the
+    massless dummy bodies the exporter inserts for multi-DOF joints -- so the clip's
+    ``rigid_body_*`` arrays line up 1:1 with a ``RobotConfig.kinematic_info`` built from
+    the same MJCF. Body world transforms come from MuJoCo forward kinematics on that MJCF
+    (bit-exact vs the Warp skeleton), then Y-up -> Z-up.
+
+    If ``belt_speed`` (a per-frame ``(F,)`` belt-speed trace in m/s) is given, the clip
+    is mapped from treadmill to overground via :func:`biomech.export.tm2og.tm2og_motion`
+    (virtual-origin method): the forward displacement ``∫ v_belt dt`` is added to every
+    body position and ``v_belt`` to every body linear velocity, along the forward
+    direction inferred from the stance feet. Rotations/DOFs are untouched.
+    """
+    import mujoco
+
+    from biomech.export.mjcf import dart_q_to_mjcf_qpos, export_mjcf
+
+    q_t = np.asarray(q_t, dtype=np.float64)
+    if q_t.ndim == 1:
+        q_t = q_t[None, :]
+    F = q_t.shape[0]
+    dt = 1.0 / float(fps)
+
+    if mjcf_xml is None:
+        mjcf_xml = export_mjcf(spec, group_scales=group_scales, coupled_knee=coupled_knee).xml
+    model = mujoco.MjModel.from_xml_string(mjcf_xml)
+    data = mujoco.MjData(model)
+
+    # sim body order excluding MuJoCo's implicit 'world' body (id 0)
+    body_ids = list(range(1, model.nbody))
+    body_names = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in body_ids
+    ]
+    nb = len(body_ids)
+
+    pos = np.zeros((F, nb, 3), dtype=np.float64)
+    rot = np.zeros((F, nb, 3, 3), dtype=np.float64)
+    for f in range(F):
+        qp = dart_q_to_mjcf_qpos(spec, q_t[f], group_scales, coupled_knee)
+        # dart_q_to_mjcf_qpos emits the free-root quat as xyzw (Newton); MuJoCo's free
+        # joint expects wxyz -- swap it or the whole body renders mis-oriented.
+        x, y, z, w = qp[3:7]
+        qp[3:7] = (w, x, y, z)
+        data.qpos[:] = qp
+        mujoco.mj_kinematics(model, data)
+        for i, b in enumerate(body_ids):
+            pos[f, i] = data.xpos[b]
+            rot[f, i] = data.xmat[b].reshape(3, 3)
+
+    # OpenSim Y-up -> ProtoMotions/Newton Z-up
+    pos = np.einsum("ij,fnj->fni", R_OS2PM, pos)
+    rot = np.einsum("ij,fnjk->fnik", R_OS2PM, rot)
+
+    quat = _matrix_to_quat_xyzw(rot)
+    lin_vel = _finite_diff_lin(pos, dt)
+    ang_vel = _angular_velocity(rot, dt)
+
+    qpos = np.stack(
+        [dart_q_to_mjcf_qpos(spec, q_t[f], group_scales, coupled_knee) for f in range(F)]
+    )
+    dof_pos = qpos[:, 7:]
+    dof_vel = _finite_diff_lin(dof_pos, dt)
+
+    import torch
+
+    def t32(a):
+        return torch.as_tensor(np.asarray(a, dtype=np.float32))
+
+    data_dict = {
+        "rigid_body_pos": t32(pos),
+        "rigid_body_rot": t32(quat),
+        "rigid_body_vel": t32(lin_vel),
+        "rigid_body_ang_vel": t32(ang_vel),
+        "dof_pos": t32(dof_pos),
+        "dof_vel": t32(dof_vel),
+        "fps": float(fps),
+    }
+    if belt_speed is not None:
+        from biomech.export.tm2og import tm2og_motion
+
+        tm2og_motion(data_dict, np.asarray(belt_speed), float(fps), body_names)
+
+    return MotionExportResult(
+        data=data_dict, body_names=body_names, dof_names=[], fps=float(fps)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. RobotConfig
+# ---------------------------------------------------------------------------
+def build_biomech_robot_config(
+    asset_file_name: str = "mjcf/biomech_rajagopal.xml",
+    *,
+    asset_root: str = PM_ASSET_ROOT,
+    body_map: Optional[dict] = None,
+    anchor_body_name: str = "torso",
+    default_root_height: float = 0.94,
+    control_type: str = "built_in_pd",
+):
+    """Construct a validated ProtoMotions ``RobotConfig`` for the fitted skeleton.
+
+    Instantiating the returned config runs ProtoMotions' ``extract_kinematic_info`` /
+    ``extract_control_info`` on the MJCF at ``asset_root/asset_file_name`` (so the asset
+    must already be written, e.g. by :func:`write_biomech_asset`). Requires
+    ``protomotions`` to be importable.
+    """
+    from protomotions.robot_configs.base import (
+        ControlConfig,
+        ControlType,
+        RobotAssetConfig,
+        RobotConfig,
+    )
+
+    return RobotConfig(
+        asset=RobotAssetConfig(
+            asset_root=asset_root,
+            asset_file_name=asset_file_name,
+            self_collisions=False,
+        ),
+        common_naming_to_robot_body_names=dict(body_map or RAJAGOPAL_BODY_MAP),
+        anchor_body_name=anchor_body_name,
+        default_root_height=default_root_height,
+        control=ControlConfig(control_type=ControlType.from_str(control_type)),
+    )
+
+
+def export_protomotions_bundle(
+    spec,
+    q_t: np.ndarray,
+    fps: float,
+    *,
+    group_scales: Optional[np.ndarray] = None,
+    coupled_knee: str = "coupled",
+    asset_file_name: str = "mjcf/biomech_rajagopal.xml",
+    asset_root: str = PM_ASSET_ROOT,
+    repo_root: Optional[str | Path] = None,
+    motion_path: Optional[str | Path] = None,
+) -> ProtoMotionsBundle:
+    """Write the MJCF asset (+ optional sim-body motion clip) and return the bundle."""
+    asset_path = write_biomech_asset(
+        spec,
+        asset_file_name=asset_file_name,
+        group_scales=group_scales,
+        coupled_knee=coupled_knee,
+        asset_root=asset_root,
+        repo_root=repo_root,
+    )
+    clip = build_simbody_motion(
+        spec, q_t, fps, group_scales=group_scales, coupled_knee=coupled_knee
+    )
+    out_motion = None
+    if motion_path is not None:
+        import torch
+
+        out_motion = Path(motion_path)
+        out_motion.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(clip.data, str(out_motion))
+    return ProtoMotionsBundle(
+        asset_path=asset_path,
+        asset_file_name=asset_file_name,
+        motion_path=out_motion,
+        body_names=clip.body_names,
+        dof_names=clip.dof_names,
+        fps=float(fps),
+    )
