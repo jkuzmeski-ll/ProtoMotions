@@ -121,13 +121,29 @@ def _reshape_channels(raw: Any, n_plates: int) -> np.ndarray:
 
 
 def compute_force_plates(
-    c3d: C3DFile, fz_threshold: float = 20.0
+    c3d: C3DFile,
+    fz_threshold: float = 20.0,
+    filter_cutoff_hz: Optional[float] = None,
+    filter_order: int = 4,
 ) -> List[ForcePlate]:
-    """Extract per-plate GRF/COP/free-moment signals from a parsed C3D file."""
+    """Extract per-plate GRF/COP/free-moment signals from a parsed C3D file.
+
+    If ``filter_cutoff_hz`` is set, each plate's force and moment channels are
+    zero-phase (``filtfilt``) Butterworth low-pass filtered at that cutoff *before* COP
+    and free-moment are derived, so every downstream kinetic quantity is consistent with
+    the filtered kinematics (matched-cutoff inverse dynamics). ``None`` (default) leaves
+    the raw analog signals untouched.
+    """
 
     used = int(c3d.param("FORCE_PLATFORM", "USED", 0) or 0)
     if used <= 0:
         return []
+
+    do_filter = (
+        filter_cutoff_hz is not None
+        and c3d.analog_rate
+        and 0.0 < filter_cutoff_hz < 0.5 * c3d.analog_rate
+    )
 
     types = c3d.param("FORCE_PLATFORM", "TYPE", [2] * used)
     if not isinstance(types, list):
@@ -160,6 +176,20 @@ def compute_force_plates(
         moment = np.column_stack(
             [c3d.analog[:, mx_i], c3d.analog[:, my_i], c3d.analog[:, mz_i]]
         ) * NMM_TO_NM
+
+        # Zero-phase low-pass the raw kinetics so COP/free-moment (computed below from
+        # force+moment) inherit the same bandwidth as the filtered kinematics.
+        if do_filter:
+            from .filters import lowpass_dense
+
+            assert filter_cutoff_hz is not None  # narrowed by do_filter
+            cutoff = float(filter_cutoff_hz)
+            force = lowpass_dense(force, cutoff, c3d.analog_rate, filter_order)
+            moment = lowpass_dense(moment, cutoff, c3d.analog_rate, filter_order)
+            warnings.append(
+                f"kinetics low-pass filtered: order-{filter_order} Butterworth, "
+                f"{cutoff:g} Hz zero-phase (filtfilt)"
+            )
 
         plate_corners = corners[p]
         center = plate_corners.mean(axis=0)

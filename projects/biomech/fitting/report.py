@@ -7,9 +7,12 @@
 # per-marker RMS / max / mean over the visible frames. It is the standard "how good is
 # this fit" report used everywhere in AddBiomechanics.
 #
-# This port keeps the same statistics but computes the model marker positions with the
-# ported Warp skeleton FK (``WarpSkeleton.forward``) instead of DART. NaN observations
-# are treated as "missing" (not counted), exactly like Nimble's visibility masking.
+# This port keeps the same statistics but computes the model marker positions AND all of
+# the per-frame / per-marker reductions on the Warp GPU skeleton (``WarpSkeleton``): the
+# FK runs on the device, a distance kernel produces the ``(F, M)`` visible marker error
+# matrix, and per-frame / per-marker reduction kernels replace the old Python loops.
+# NaN observations are treated as "missing" (not counted), exactly like Nimble's
+# visibility masking.
 
 """Marker-fit error report (port of Nimble ``IKErrorReport``, M2 reporting)."""
 
@@ -18,8 +21,83 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+import warp as wp
 
 from biomech.skeleton.skeleton import WarpSkeleton
+
+
+# ---------------------------------------------------------------------------
+# Device kernels
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _dist_kernel(
+    markers: wp.array2d(dtype=wp.vec3d),  # (F, M) model FK markers
+    obs: wp.array2d(dtype=wp.vec3d),  # (F, M) observed (NaNs pre-zeroed)
+    vis: wp.array2d(dtype=wp.float64),  # (F, M) 1 = visible, 0 = missing
+    dist: wp.array2d(dtype=wp.float64),  # (F, M) output euclidean error (0 if missing)
+):
+    f, m = wp.tid()
+    if vis[f, m] > wp.float64(0.0):
+        d = markers[f, m] - obs[f, m]
+        dist[f, m] = wp.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+    else:
+        dist[f, m] = wp.float64(0.0)
+
+
+@wp.kernel
+def _per_frame_kernel(
+    dist: wp.array2d(dtype=wp.float64),  # (F, M)
+    vis: wp.array2d(dtype=wp.float64),  # (F, M)
+    M: wp.int32,
+    sumsq: wp.array(dtype=wp.float64),  # (F,)
+    cnt: wp.array(dtype=wp.float64),  # (F,)
+    mx: wp.array(dtype=wp.float64),  # (F,)
+):
+    f = wp.tid()
+    s = wp.float64(0.0)
+    c = wp.float64(0.0)
+    mm = wp.float64(0.0)
+    for m in range(M):
+        if vis[f, m] > wp.float64(0.0):
+            d = dist[f, m]
+            s += d * d
+            c += wp.float64(1.0)
+            if d > mm:
+                mm = d
+    sumsq[f] = s
+    cnt[f] = c
+    mx[f] = mm
+
+
+@wp.kernel
+def _per_marker_kernel(
+    dist: wp.array2d(dtype=wp.float64),  # (F, M)
+    vis: wp.array2d(dtype=wp.float64),  # (F, M)
+    Fr: wp.int32,
+    sumsq: wp.array(dtype=wp.float64),  # (M,)
+    ssum: wp.array(dtype=wp.float64),  # (M,)
+    cnt: wp.array(dtype=wp.float64),  # (M,)
+    mx: wp.array(dtype=wp.float64),  # (M,)
+):
+    m = wp.tid()
+    s = wp.float64(0.0)
+    sm = wp.float64(0.0)
+    c = wp.float64(0.0)
+    mm = wp.float64(0.0)
+    for f in range(Fr):
+        if vis[f, m] > wp.float64(0.0):
+            d = dist[f, m]
+            s += d * d
+            sm += d
+            c += wp.float64(1.0)
+            if d > mm:
+                mm = d
+    sumsq[m] = s
+    ssum[m] = sm
+    cnt[m] = c
+    mx[m] = mm
 
 
 @dataclass
@@ -96,7 +174,8 @@ def marker_errors(
     -----
     Errors are Euclidean marker distances (meters). This matches Nimble's
     ``IKErrorReport`` which reports geometric distance, not the weighted least-squares
-    objective the solver minimizes.
+    objective the solver minimizes. All heavy work (FK + per-frame/per-marker
+    reductions) runs on the Warp device.
     """
     obs = np.asarray(observations, dtype=np.float64)
     assert obs.ndim == 3 and obs.shape[2] == 3, obs.shape
@@ -106,52 +185,78 @@ def marker_errors(
         poses = poses[None]
     assert poses.shape[0] == F, (poses.shape, F)
 
+    dev = skel.device
+    G = skel.topo.num_groups
+    gs = np.ones(3 * G, dtype=np.float64) if group_scales is None else (
+        np.asarray(group_scales, dtype=np.float64).ravel()
+    )
+
+    visible = np.isfinite(obs).all(axis=2)  # (F, M)
+    obs_z = np.where(visible[..., None], obs, 0.0)
+
     prev_off = None
     if marker_offsets is not None:
         prev_off = skel.marker_offsets().copy()
         skel.set_marker_offsets(np.asarray(marker_offsets, dtype=np.float64))
     try:
-        _, model_mk = skel.forward(poses, group_scales)  # (F, M, 3)
+        d_poses = wp.array(poses, dtype=wp.float64, device=dev)
+        d_scales = wp.array(gs, dtype=wp.float64, device=dev)
+        _, d_markers = skel._run_wp(d_poses, d_scales)  # (F, M) vec3d on device
+
+        d_obs = wp.array(obs_z.reshape(F, M, 3), dtype=wp.vec3d, device=dev)
+        d_vis = wp.array(visible.astype(np.float64), dtype=wp.float64, device=dev)
+        d_dist = wp.zeros((F, M), dtype=wp.float64, device=dev)
+        wp.launch(
+            _dist_kernel, dim=(F, M), inputs=[d_markers, d_obs, d_vis],
+            outputs=[d_dist], device=dev,
+        )
+
+        d_pf_sumsq = wp.zeros(F, dtype=wp.float64, device=dev)
+        d_pf_cnt = wp.zeros(F, dtype=wp.float64, device=dev)
+        d_pf_max = wp.zeros(F, dtype=wp.float64, device=dev)
+        wp.launch(
+            _per_frame_kernel, dim=F, inputs=[d_dist, d_vis, M],
+            outputs=[d_pf_sumsq, d_pf_cnt, d_pf_max], device=dev,
+        )
+        d_pm_sumsq = wp.zeros(M, dtype=wp.float64, device=dev)
+        d_pm_sum = wp.zeros(M, dtype=wp.float64, device=dev)
+        d_pm_cnt = wp.zeros(M, dtype=wp.float64, device=dev)
+        d_pm_max = wp.zeros(M, dtype=wp.float64, device=dev)
+        wp.launch(
+            _per_marker_kernel, dim=M, inputs=[d_dist, d_vis, F],
+            outputs=[d_pm_sumsq, d_pm_sum, d_pm_cnt, d_pm_max], device=dev,
+        )
+        dist = d_dist.numpy()
+        pf_sumsq = d_pf_sumsq.numpy()
+        pf_cnt = d_pf_cnt.numpy()
+        pf_max = d_pf_max.numpy()
+        pm_sumsq = d_pm_sumsq.numpy()
+        pm_sum = d_pm_sum.numpy()
+        pm_cnt = d_pm_cnt.numpy()
+        pm_max = d_pm_max.numpy()
     finally:
         if prev_off is not None:
             skel.set_marker_offsets(prev_off)
 
-    visible = np.isfinite(obs).all(axis=2)  # (F, M)
-    dist = np.linalg.norm(np.where(visible[..., None], model_mk - obs, 0.0), axis=2)  # (F, M)
+    # per-frame (NaN where the frame had no visible marker)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        per_frame_rms = np.where(pf_cnt > 0, np.sqrt(pf_sumsq / pf_cnt), np.nan)
+    per_frame_max = np.where(pf_cnt > 0, pf_max, np.nan)
 
+    # per-marker (NaN where the marker was never visible)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        per_marker_rms = np.where(pm_cnt > 0, np.sqrt(pm_sumsq / pm_cnt), np.nan)
+        per_marker_mean = np.where(pm_cnt > 0, pm_sum / pm_cnt, np.nan)
+    per_marker_max = np.where(pm_cnt > 0, pm_max, np.nan)
+
+    # overall (weighted by marker weight * visibility)
     if weights is None:
         w = np.ones(M)
     else:
         w = np.asarray(weights, dtype=np.float64).ravel()
-    wvis = (w[None, :] * visible).astype(np.float64)  # (F, M)
-
-    def _rms(d2_sum, n):
-        return float(np.sqrt(d2_sum / n)) if n > 0 else float("nan")
-
-    # per-frame
-    d2 = dist**2
-    nf = visible.sum(axis=1)
-    per_frame_rms = np.array(
-        [_rms(d2[t, visible[t]].sum(), nf[t]) for t in range(F)]
-    )
-    per_frame_max = np.array(
-        [float(dist[t, visible[t]].max()) if nf[t] else float("nan") for t in range(F)]
-    )
-
-    # per-marker
-    nm = visible.sum(axis=0)
-    per_marker_rms = np.full(M, np.nan)
-    per_marker_max = np.full(M, np.nan)
-    per_marker_mean = np.full(M, np.nan)
-    for m in range(M):
-        if nm[m]:
-            dm = dist[visible[:, m], m]
-            per_marker_rms[m] = float(np.sqrt((dm**2).mean()))
-            per_marker_max[m] = float(dm.max())
-            per_marker_mean[m] = float(dm.mean())
-
-    # overall (weighted by marker weight * visibility)
+    wvis = w[None, :] * visible  # (F, M)
     total_w = wvis.sum()
+    d2 = dist**2
     rms = float(np.sqrt((wvis * d2).sum() / total_w)) if total_w > 0 else float("nan")
     mean = float((wvis * dist).sum() / total_w) if total_w > 0 else float("nan")
     mx = float(dist[visible].max()) if visible.any() else float("nan")

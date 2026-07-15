@@ -9,20 +9,22 @@
 # Design (why this shape):
 #   * The expensive quantities -- marker forward kinematics and the marker Jacobian
 #     ``d(marker world pos)/dq`` -- are computed by the Warp skeleton
-#     (``biomech.skeleton.WarpSkeleton``). The Warp autodiff Jacobian costs ``3*M``
-#     backward passes *regardless of the number of frames*, so IK over an entire
-#     trial's frames is batched essentially for free: one FK + one Jacobian sweep per
-#     iteration covers all frames at once.
-#   * Nimble's damped-least-squares step solves ``delta = J^T (J J^T + lambda I)^-1 r``
-#     because for a single frame ``J`` has more rows (3*M) than columns (ndof). By the
-#     push-through identity ``J^T (J J^T + lambda I)^-1 = (J^T J + lambda I)^-1 J^T``,
-#     this is *identical* to the cheaper ``ndof x ndof`` normal-equation form, which is
-#     what we solve here (batched with ``np.linalg.solve`` over frames).
-#   * We use a standard Levenberg-Marquardt trust-region schedule (per-frame adaptive
-#     damping with accept/reject + line-search revert) rather than Nimble's exact
-#     lr/transpose bookkeeping. The pose IK is a well-posed weighted least squares once
-#     scales+offsets are fixed, so the recovered ``q`` is set by the minimum, not the
-#     descent path; we validate by round-trip recovery to machine precision.
+#     (``biomech.skeleton.WarpSkeleton``). The finite-difference Jacobian costs two
+#     GPU kernel launches *regardless of the number of frames*, so IK over an entire
+#     trial's frames is batched essentially for free.
+#   * The ENTIRE Levenberg-Marquardt loop now runs on the device: the marker residual,
+#     per-frame loss, the normal equations ``H = J^T J`` / ``g = J^T r``, the per-frame
+#     damped SPD solve (an in-kernel float64 Cholesky), the trial-pose evaluation, and
+#     the accept/reject + damping schedule are all Warp kernels. The giant
+#     ``(F, M, 3, ndof)`` Jacobian and the ``(F, ndof, ndof)`` normal equations never
+#     leave the GPU; only a single per-iteration "all frames converged" flag (F ints)
+#     is copied to the host to decide when to stop.
+#   * Nimble's damped-least-squares step solves ``delta = J^T (J J^T + lambda I)^-1 r``.
+#     By the push-through identity this equals the cheaper ``ndof x ndof`` normal-equation
+#     form ``(J^T J + lambda I)^-1 J^T r`` which is what the device kernels build and
+#     solve. We use a standard LM trust-region schedule (per-frame adaptive damping with
+#     accept/reject); the pose IK is a well-posed weighted least squares once scales +
+#     offsets are fixed, so the recovered ``q`` is set by the minimum, not the path.
 #
 # Weighting: each marker gets a nonnegative weight; a per-(frame, marker) visibility
 # mask handles missing/occluded markers. Rows of both the residual and the Jacobian are
@@ -36,9 +38,194 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import warp as wp
 
 from biomech.osim.spec import SkeletonSpec
 from biomech.skeleton.skeleton import WarpSkeleton
+
+
+# ---------------------------------------------------------------------------
+# Device kernels for the Levenberg-Marquardt loop (all float64, per-frame batched)
+# ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _residual_kernel(
+    markers: wp.array2d(dtype=wp.vec3d),  # (F, M) model marker world positions
+    obs: wp.array2d(dtype=wp.vec3d),  # (F, M) observed (NaNs pre-zeroed)
+    rw: wp.array2d(dtype=wp.float64),  # (F, M) row weight = sqrt(weight) * mask
+    res: wp.array2d(dtype=wp.vec3d),  # (F, M) output weighted residual
+):
+    f, m = wp.tid()
+    w = rw[f, m]
+    d = markers[f, m] - obs[f, m]
+    res[f, m] = wp.vec3d(d[0] * w, d[1] * w, d[2] * w)
+
+
+@wp.kernel
+def _loss_kernel(
+    res: wp.array2d(dtype=wp.vec3d),  # (F, M) weighted residual
+    M: wp.int32,
+    loss: wp.array(dtype=wp.float64),  # (F,) per-frame squared error
+):
+    f = wp.tid()
+    acc = wp.float64(0.0)
+    for m in range(M):
+        r = res[f, m]
+        acc += r[0] * r[0] + r[1] * r[1] + r[2] * r[2]
+    loss[f] = acc
+
+
+@wp.kernel
+def _assemble_H_kernel(
+    jac: wp.array4d(dtype=wp.float64),  # (F, M, 3, ndof) unweighted marker Jacobian
+    rw: wp.array2d(dtype=wp.float64),  # (F, M) row weight
+    M: wp.int32,
+    H: wp.array3d(dtype=wp.float64),  # (F, ndof, ndof) output H = Jw^T Jw
+):
+    f, i, j = wp.tid()
+    if j >= i:
+        acc = wp.float64(0.0)
+        for m in range(M):
+            w2 = rw[f, m] * rw[f, m]
+            acc += w2 * (
+                jac[f, m, 0, i] * jac[f, m, 0, j]
+                + jac[f, m, 1, i] * jac[f, m, 1, j]
+                + jac[f, m, 2, i] * jac[f, m, 2, j]
+            )
+        H[f, i, j] = acc
+        H[f, j, i] = acc
+
+
+@wp.kernel
+def _assemble_g_kernel(
+    jac: wp.array4d(dtype=wp.float64),  # (F, M, 3, ndof)
+    rw: wp.array2d(dtype=wp.float64),  # (F, M)
+    res: wp.array2d(dtype=wp.vec3d),  # (F, M) weighted residual (already * rw)
+    M: wp.int32,
+    g: wp.array2d(dtype=wp.float64),  # (F, ndof) output g = Jw^T r
+):
+    f, i = wp.tid()
+    acc = wp.float64(0.0)
+    for m in range(M):
+        w = rw[f, m]
+        r = res[f, m]
+        acc += w * (
+            jac[f, m, 0, i] * r[0]
+            + jac[f, m, 1, i] * r[1]
+            + jac[f, m, 2, i] * r[2]
+        )
+    g[f, i] = acc
+
+
+@wp.kernel
+def _lm_solve_kernel(
+    H: wp.array3d(dtype=wp.float64),  # (F, ndof, ndof)
+    g: wp.array2d(dtype=wp.float64),  # (F, ndof)
+    lam: wp.array(dtype=wp.float64),  # (F,) per-frame damping
+    ndof: wp.int32,
+    A: wp.array3d(dtype=wp.float64),  # (F, ndof, ndof) scratch (Cholesky factor)
+    delta: wp.array2d(dtype=wp.float64),  # (F, ndof) output step
+):
+    """Per-frame solve of ``(H + lam I) delta = g`` via in-place float64 Cholesky."""
+    f = wp.tid()
+    lm = lam[f]
+    # A = H + lam I
+    for i in range(ndof):
+        for j in range(ndof):
+            A[f, i, j] = H[f, i, j]
+        A[f, i, i] = A[f, i, i] + lm
+    # Cholesky A = L L^T (lower triangle, in place). A is SPD because lam > 0.
+    for i in range(ndof):
+        for j in range(i + 1):
+            s = A[f, i, j]
+            for k in range(j):
+                s -= A[f, i, k] * A[f, j, k]
+            if i == j:
+                if s <= wp.float64(0.0):
+                    s = wp.float64(1e-300)
+                A[f, i, j] = wp.sqrt(s)
+            else:
+                A[f, i, j] = s / A[f, j, j]
+    # forward solve L y = g  (store y in delta)
+    for i in range(ndof):
+        s = g[f, i]
+        for k in range(i):
+            s -= A[f, i, k] * delta[f, k]
+        delta[f, i] = s / A[f, i, i]
+    # back solve L^T x = y
+    for ii in range(ndof):
+        i = ndof - 1 - ii
+        s = delta[f, i]
+        for k in range(i + 1, ndof):
+            s -= A[f, k, i] * delta[f, k]
+        delta[f, i] = s / A[f, i, i]
+
+
+@wp.kernel
+def _trial_pose_kernel(
+    q: wp.array2d(dtype=wp.float64),  # (F, ndof)
+    delta: wp.array2d(dtype=wp.float64),  # (F, ndof)
+    lo: wp.array(dtype=wp.float64),  # (ndof,)
+    hi: wp.array(dtype=wp.float64),  # (ndof,)
+    clamp: wp.int32,
+    q_try: wp.array2d(dtype=wp.float64),  # (F, ndof) output
+):
+    f, i = wp.tid()
+    v = q[f, i] - delta[f, i]
+    if clamp == 1:
+        if v < lo[i]:
+            v = lo[i]
+        if v > hi[i]:
+            v = hi[i]
+    q_try[f, i] = v
+
+
+@wp.kernel
+def _accept_kernel(
+    loss: wp.array(dtype=wp.float64),  # (F,) current loss (updated in place)
+    loss_try: wp.array(dtype=wp.float64),  # (F,) trial loss
+    q_try: wp.array2d(dtype=wp.float64),  # (F, ndof)
+    res_try: wp.array2d(dtype=wp.vec3d),  # (F, M)
+    ndof: wp.int32,
+    M: wp.int32,
+    conv_thresh: wp.float64,
+    dmin: wp.float64,
+    dmax: wp.float64,
+    ddown: wp.float64,
+    dup: wp.float64,
+    q: wp.array2d(dtype=wp.float64),  # (F, ndof) updated in place
+    res: wp.array2d(dtype=wp.vec3d),  # (F, M) updated in place
+    lam: wp.array(dtype=wp.float64),  # (F,) updated in place
+    converged: wp.array(dtype=wp.int32),  # (F,) output flag
+):
+    f = wp.tid()
+    lcur = loss[f]
+    lt = loss_try[f]
+    if lt < lcur:
+        for i in range(ndof):
+            q[f, i] = q_try[f, i]
+        for m in range(M):
+            res[f, m] = res_try[f, m]
+        change = lcur - lt
+        loss[f] = lt
+        nl = lam[f] * ddown
+        if nl < dmin:
+            nl = dmin
+        lam[f] = nl
+        if change < conv_thresh:
+            converged[f] = 1
+        else:
+            converged[f] = 0
+    else:
+        nl = lam[f] * dup
+        if nl > dmax:
+            nl = dmax
+        lam[f] = nl
+        if lam[f] >= dmax:
+            converged[f] = 1
+        else:
+            converged[f] = 0
 
 
 def _as_2d_q(q: np.ndarray, F: int, ndof: int) -> np.ndarray:
@@ -47,8 +234,6 @@ def _as_2d_q(q: np.ndarray, F: int, ndof: int) -> np.ndarray:
         q2 = np.repeat(q2, F, axis=0)
     assert q2.shape == (F, ndof), f"q_init must be ({F},{ndof}), got {q2.shape}"
     return q2
-
-
 
 
 @dataclass
@@ -128,7 +313,7 @@ def solve_marker_ik(
     lower: np.ndarray | None = None,
     upper: np.ndarray | None = None,
 ) -> MarkerIKResult:
-    """Batched Levenberg-Marquardt marker IK over frames.
+    """Batched Levenberg-Marquardt marker IK over frames (fully device-resident).
 
     Parameters
     ----------
@@ -166,10 +351,7 @@ def solve_marker_ik(
         f"observed markers M={M} != model markers {skel.topo.num_markers}"
     )
 
-    q = np.atleast_2d(np.asarray(q_init, dtype=np.float64)).copy()
-    if q.shape[0] == 1 and F > 1:
-        q = np.repeat(q, F, axis=0)
-    assert q.shape == (F, ndof), f"q_init must be ({F},{ndof}), got {q.shape}"
+    q = _as_2d_q(q_init, F, ndof)
 
     if lower is None or upper is None:
         lo_d, hi_d = position_limits(skel.spec)
@@ -189,77 +371,122 @@ def solve_marker_ik(
     if cfg.clamp_to_limits:
         q = np.clip(q, lower, upper)
 
-    lam = np.full(F, cfg.damping_init, dtype=np.float64)
-    eye = np.eye(ndof, dtype=np.float64)
+    dev = skel.device
+    G = skel.topo.num_groups
+    if group_scales is None:
+        gs = np.ones(3 * G, dtype=np.float64)
+    else:
+        gs = np.asarray(group_scales, dtype=np.float64).ravel()
 
-    def _loss(qc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Return ``(residual (F,M,3), per-frame squared loss (F,))`` at poses ``qc``."""
-        _, mk = skel.forward(qc, group_scales)  # (F, M, 3)
-        res = (mk - obs) * rw[..., None]
-        loss = (res**2).reshape(F, -1).sum(axis=1)
-        return res, loss
-
-    res, loss = _loss(q)
-    iters = 0
-    for iters in range(1, cfg.max_iters + 1):
-        # Jacobian of marker positions wrt q (F, M, 3, ndof), weighted row-wise.
-        # The finite-difference path is a two-kernel GPU implementation that avoids the
-        # legacy 3*M sequential Warp-autodiff backward passes. It is the default because
-        # it agrees with autodiff to numerical precision for this IK use case and is the
-        # difference between seconds and minutes on real windows.
-        if cfg.jacobian == "fd":
-            jac = skel.marker_jacobian_wrt_q_fd(q, group_scales)
-        elif cfg.jacobian == "autodiff":
-            jac = skel.marker_jacobian_wrt_q(q, group_scales)
-        else:
-            raise ValueError(f"unknown IK Jacobian backend: {cfg.jacobian!r}")
-        if jac.ndim == 3:  # single frame -> add batch dim
-            jac = jac[None]
-        jac = jac * rw[:, :, None, None]  # scale rows by sqrt(weight)*mask
-
-        J = jac.reshape(F, M * 3, ndof)
-        r = res.reshape(F, M * 3)
-        # Normal equations: H = J^T J, g = J^T r.  (identical to Nimble's DLS form)
-        H = np.einsum("fri,frj->fij", J, J)
-        g = np.einsum("fri,fr->fi", J, r)
-
-        # Per-frame LM step with accept/reject on the damping.
-        # Vectorized solve, then evaluate the trial poses in one batched FK.
-        A = H + lam[:, None, None] * eye[None]
-        try:
-            delta = np.linalg.solve(A, g[..., None])[..., 0]  # (F, ndof)
-        except np.linalg.LinAlgError:
-            delta = np.stack(
-                [np.linalg.lstsq(A[f], g[f], rcond=None)[0] for f in range(F)]
-            )
-        q_try = q - delta
-        if cfg.clamp_to_limits:
-            q_try = np.clip(q_try, lower, upper)
-        res_try, loss_try = _loss(q_try)
-
-        accept = loss_try < loss
-        # Accepted frames: take the step, decrease damping.
-        q[accept] = q_try[accept]
-        res[accept] = res_try[accept]
-        loss_change = loss - loss_try
-        loss[accept] = loss_try[accept]
-        lam[accept] = np.maximum(lam[accept] * cfg.damping_down, cfg.damping_min)
-        # Rejected frames: keep pose, increase damping (smaller, safer step next).
-        lam[~accept] = np.minimum(lam[~accept] * cfg.damping_up, cfg.damping_max)
-
-        # Convergence: every frame either converged (tiny accepted improvement) or is
-        # stuck at max damping (cannot make progress).
-        converged = (accept & (loss_change < cfg.convergence_threshold)) | (
-            ~accept & (lam >= cfg.damping_max)
-        )
-        if converged.all():
-            break
-
-    # Per-frame weighted RMS over observed coordinates (meters).
-    n_obs = np.maximum(rw.astype(bool).sum(axis=1), 1)  # markers per frame
-    marker_rms = np.sqrt(loss / (3.0 * n_obs))
-    return MarkerIKResult(
-        q=q, marker_rms=marker_rms, iters=iters, final_loss=loss
+    # ---- upload everything once; the loop stays on the device ----
+    d_q = wp.array(q, dtype=wp.float64, device=dev)
+    d_scales = wp.array(gs, dtype=wp.float64, device=dev)
+    d_obs = wp.array(obs.reshape(F, M, 3), dtype=wp.vec3d, device=dev)
+    d_rw = wp.array(rw, dtype=wp.float64, device=dev)
+    d_lo = wp.array(lower, dtype=wp.float64, device=dev)
+    d_hi = wp.array(upper, dtype=wp.float64, device=dev)
+    d_lam = wp.array(
+        np.full(F, cfg.damping_init, dtype=np.float64), dtype=wp.float64, device=dev
     )
 
+    d_res = wp.zeros((F, M), dtype=wp.vec3d, device=dev)
+    d_res_try = wp.zeros((F, M), dtype=wp.vec3d, device=dev)
+    d_loss = wp.zeros(F, dtype=wp.float64, device=dev)
+    d_loss_try = wp.zeros(F, dtype=wp.float64, device=dev)
+    d_H = wp.zeros((F, ndof, ndof), dtype=wp.float64, device=dev)
+    d_g = wp.zeros((F, ndof), dtype=wp.float64, device=dev)
+    d_A = wp.zeros((F, ndof, ndof), dtype=wp.float64, device=dev)
+    d_delta = wp.zeros((F, ndof), dtype=wp.float64, device=dev)
+    d_q_try = wp.zeros((F, ndof), dtype=wp.float64, device=dev)
+    d_converged = wp.zeros(F, dtype=wp.int32, device=dev)
 
+    clamp_flag = 1 if cfg.clamp_to_limits else 0
+
+    def _eval(d_pose, d_res_out, d_loss_out):
+        """FK -> weighted residual -> per-frame loss, all on device."""
+        _, d_markers = skel._run_wp(d_pose, d_scales)
+        wp.launch(
+            _residual_kernel,
+            dim=(F, M),
+            inputs=[d_markers, d_obs, d_rw],
+            outputs=[d_res_out],
+            device=dev,
+        )
+        wp.launch(
+            _loss_kernel, dim=F, inputs=[d_res_out, M], outputs=[d_loss_out], device=dev
+        )
+
+    def _jacobian(d_pose):
+        if cfg.jacobian == "fd":
+            return skel.marker_jacobian_wrt_q_fd_wp(d_pose, d_scales)
+        elif cfg.jacobian == "autodiff":
+            jac_host = skel.marker_jacobian_wrt_q(d_pose.numpy(), gs)
+            if jac_host.ndim == 3:
+                jac_host = jac_host[None]
+            return wp.array(jac_host, dtype=wp.float64, device=dev)
+        raise ValueError(f"unknown IK Jacobian backend: {cfg.jacobian!r}")
+
+    _eval(d_q, d_res, d_loss)
+
+    iters = 0
+    for iters in range(1, cfg.max_iters + 1):
+        d_jac = _jacobian(d_q)  # (F, M, 3, ndof) device, unweighted
+        wp.launch(
+            _assemble_H_kernel,
+            dim=(F, ndof, ndof),
+            inputs=[d_jac, d_rw, M],
+            outputs=[d_H],
+            device=dev,
+        )
+        wp.launch(
+            _assemble_g_kernel,
+            dim=(F, ndof),
+            inputs=[d_jac, d_rw, d_res, M],
+            outputs=[d_g],
+            device=dev,
+        )
+        wp.launch(
+            _lm_solve_kernel,
+            dim=F,
+            inputs=[d_H, d_g, d_lam, ndof],
+            outputs=[d_A, d_delta],
+            device=dev,
+        )
+        wp.launch(
+            _trial_pose_kernel,
+            dim=(F, ndof),
+            inputs=[d_q, d_delta, d_lo, d_hi, clamp_flag],
+            outputs=[d_q_try],
+            device=dev,
+        )
+        _eval(d_q_try, d_res_try, d_loss_try)
+        wp.launch(
+            _accept_kernel,
+            dim=F,
+            inputs=[
+                d_loss,
+                d_loss_try,
+                d_q_try,
+                d_res_try,
+                ndof,
+                M,
+                wp.float64(cfg.convergence_threshold),
+                wp.float64(cfg.damping_min),
+                wp.float64(cfg.damping_max),
+                wp.float64(cfg.damping_down),
+                wp.float64(cfg.damping_up),
+            ],
+            outputs=[d_q, d_res, d_lam, d_converged],
+            device=dev,
+        )
+        # Only a single tiny (F,) flag is read back to decide the stopping condition.
+        if bool(d_converged.numpy().all()):
+            break
+
+    q_out = d_q.numpy()
+    loss = d_loss.numpy()
+
+    # Per-frame weighted RMS over observed coordinates (meters).
+    n_obs = np.maximum((rw > 0).sum(axis=1), 1)  # markers per frame
+    marker_rms = np.sqrt(loss / (3.0 * n_obs))
+    return MarkerIKResult(q=q_out, marker_rms=marker_rms, iters=iters, final_loss=loss)

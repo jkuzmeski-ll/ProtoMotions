@@ -35,6 +35,14 @@ Everything runs locally. No `ezc3d`/`c3d`/web service is required — only `nump
 - **COP** is returned in the world frame and is `NaN` below the contact
   threshold (`fz_threshold`, default 20 N), since `COP = M/Fz` is unreliable at
   low load.
+- **Filtering:** a zero-phase (`filtfilt`) 4th-order Butterworth low-pass is applied
+  at ingest to **both** kinematics (markers, at the point rate) and kinetics (force/
+  moment, at the analog rate) at a matched **20 Hz** cutoff (`load_session(...,
+  filter_cutoff_hz=20.0, filter_order=4)`; pass `filter_cutoff_hz=None` to disable).
+  Matching the two bandwidths avoids inverse-dynamics artifacts (Kristianslund et al.
+  2012). Marker NaN gaps are preserved (each contiguous run is filtered separately);
+  COP/free-moment are derived from the filtered force/moment. The applied filter is
+  recorded in `session.filter_info` and `session.report()["preprocessing"]`.
 
 ## Usage
 

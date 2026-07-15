@@ -13,7 +13,9 @@ purpose, separate from the agent skills. **Start here** at the top of any sessio
 4. `docs/01_milestone1_status.md` — Milestone 1 (ingestion) status.
 5. `docs/10_kinodynamic_retargeting_newton.md`,
    `docs/11_foot_contact_modeling_newton.md` — long-form design background.
-6. `README.md` — M1 usage (C3D/session loader).
+6. `docs/22_ik_process.md` — the **IK / marker-fitting** process end to end
+   (engine → per-frame IK → closed-form seed → bilevel fit) with source refs.
+7. `README.md` — M1 usage (C3D/session loader).
 
 ## One-paragraph state
 

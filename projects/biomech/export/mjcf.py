@@ -275,6 +275,7 @@ def export_mjcf(
     model_name: Optional[str] = None,
     marker_sites: bool = True,
     visual_geoms: bool = False,
+    subject_mass: Optional[float] = None,
 ) -> MjcfExportResult:
     """Build an MJCF string for the Newton MuJoCo solver from a fitted skeleton.
 
@@ -287,12 +288,25 @@ def export_mjcf(
     (parent origin -> each child attachment, sphere at leaves) so the skeleton is visible
     in a renderer. Geoms carry ``density=0`` + ``contype/conaffinity=0`` and the bodies
     keep their explicit ``<inertial>``, so FK/dynamics are unchanged.
+
+    ``subject_mass``: if given (kg), rescale the model's segment masses so the whole-body
+    mass equals the subject's measured mass (e.g. from the Plug-in-Gait ``.mp``), preserving
+    the model's mass *distribution*. Each body's inertia is scaled consistently by the mass
+    ratio and the (anisotropic) group geometric scales (products exactly, diagonal terms via
+    the ``I_xx = int(y^2+z^2)dm`` split), so the exported robot is anthropometrically the
+    subject: subject limb lengths (``group_scales``) *and* subject mass/inertia.
     """
     from biomech.skeleton import spatial as S
 
     if coupled_knee not in ("coupled", "hinge"):
         raise ValueError("coupled_knee must be 'coupled' or 'hinge'")
     sm = _ScaleMap(spec, group_scales)
+
+    mass_ratio = 1.0
+    if subject_mass is not None:
+        model_mass = float(sum(max(b.mass, 0.0) for b in spec.bodies))
+        if model_mass > 0.0 and subject_mass > 0.0:
+            mass_ratio = float(subject_mass) / model_mass
 
     # joint whose child is body i
     joint_of_body = {j.child_body: j for j in spec.joints}
@@ -413,10 +427,23 @@ def export_mjcf(
         bspec = spec.body(body_name)
         cs = sm.of(body_name)
         com = bspec.com * cs
-        mass = max(bspec.mass, 1e-9)
+        mass = max(bspec.mass * mass_ratio, 1e-9)
+        # Scale inertia to the subject: mass ratio x anisotropic geometry. Products
+        # (Ixy,Ixz,Iyz) scale exactly by the pairwise axis factors; diagonal terms use
+        # the I_xx = int(y^2+z^2)dm split (mean of the two orthogonal axis factors^2).
+        sx, sy, sz = float(cs[0]), float(cs[1]), float(cs[2])
+        ixx, iyy, izz, ixy, ixz, iyz = (float(v) for v in bspec.inertia)
+        inertia = np.array([
+            ixx * mass_ratio * 0.5 * (sy * sy + sz * sz),
+            iyy * mass_ratio * 0.5 * (sx * sx + sz * sz),
+            izz * mass_ratio * 0.5 * (sx * sx + sy * sy),
+            ixy * mass_ratio * sx * sy,
+            ixz * mass_ratio * sx * sz,
+            iyz * mass_ratio * sy * sz,
+        ], dtype=np.float64)
         lines.append(
             f'{indent}<inertial pos="{_fmt(com)}" mass="{repr(float(mass))}" '
-            f'fullinertia="{_fmt(bspec.inertia)}"/>'
+            f'fullinertia="{_fmt(inertia)}"/>'
         )
         if marker_sites:
             for m in spec.markers:

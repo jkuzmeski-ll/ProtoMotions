@@ -79,12 +79,15 @@ def write_biomech_asset(
     asset_root: str = PM_ASSET_ROOT,
     repo_root: Optional[str | Path] = None,
     visual_geoms: bool = True,
+    subject_mass: Optional[float] = None,
 ) -> Path:
     """Export the fitted skeleton MJCF into the ProtoMotions asset tree.
 
     Returns the absolute path written. ``asset_file_name`` is the path relative to
     ``asset_root`` used by :class:`RobotAssetConfig`. ``visual_geoms`` (default True) adds
     non-colliding capsule/sphere bones so the robot is visible in the renderer.
+    ``subject_mass`` (kg), if given, rescales body masses/inertias so the robot's whole-body
+    mass matches the subject (anthropometric mass on top of ``group_scales`` geometry).
     """
     from biomech.export.mjcf import export_mjcf
 
@@ -93,6 +96,7 @@ def write_biomech_asset(
         group_scales=group_scales,
         coupled_knee=coupled_knee,
         visual_geoms=visual_geoms,
+        subject_mass=subject_mass,
     )
     root = Path(repo_root) if repo_root is not None else Path.cwd()
     out = root / asset_root / asset_file_name
@@ -252,6 +256,7 @@ def export_protomotions_bundle(
     asset_root: str = PM_ASSET_ROOT,
     repo_root: Optional[str | Path] = None,
     motion_path: Optional[str | Path] = None,
+    subject_mass: Optional[float] = None,
 ) -> ProtoMotionsBundle:
     """Write the MJCF asset (+ optional sim-body motion clip) and return the bundle."""
     asset_path = write_biomech_asset(
@@ -261,6 +266,7 @@ def export_protomotions_bundle(
         coupled_knee=coupled_knee,
         asset_root=asset_root,
         repo_root=repo_root,
+        subject_mass=subject_mass,
     )
     clip = build_simbody_motion(
         spec, q_t, fps, group_scales=group_scales, coupled_knee=coupled_knee

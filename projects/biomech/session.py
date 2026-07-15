@@ -74,6 +74,8 @@ class CaptureSession:
     events: List[GaitEvent] = field(default_factory=list)
     subject_meta: Dict[str, float] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    # Preprocessing provenance (e.g. the low-pass filter applied at ingest), or None.
+    filter_info: Optional[Dict[str, Any]] = None
 
     # raw handle for advanced use
     c3d: Optional[C3DFile] = None
@@ -151,6 +153,8 @@ class CaptureSession:
             "subject_meta": self.subject_meta,
             "warnings": self.warnings,
         }
+        if self.filter_info is not None:
+            rep["preprocessing"] = {"filter": self.filter_info}
         if self.treadmill is not None:
             rep["treadmill"] = {
                 "rate_hz": self.treadmill.rate_hz,
@@ -242,6 +246,8 @@ def load_session(
     subject_id: Optional[str] = None,
     fz_threshold: float = 20.0,
     frames: Optional[Frames] = None,
+    filter_cutoff_hz: Optional[float] = 20.0,
+    filter_order: int = 4,
 ) -> CaptureSession:
     """Load a full capture session into a time-aligned :class:`CaptureSession`.
 
@@ -258,6 +264,15 @@ def load_session(
         clock from the mocap.
     subject_mp_path
         Optional Visual3D ``.mp`` subject-metrics file (mass/height, etc.).
+    filter_cutoff_hz
+        Zero-phase (``filtfilt``) Butterworth low-pass cutoff, applied at ingest to
+        **both** the markers (kinematics, at the point rate) and the force-plate
+        force/moment channels (kinetics, at the analog rate). The matched cutoff keeps
+        kinematics and kinetics at the same bandwidth for consistent inverse dynamics
+        (Kristianslund et al. 2012). Marker NaN gaps are preserved (each contiguous run
+        is filtered independently). Default ``20.0`` Hz; pass ``None`` to disable.
+    filter_order
+        Butterworth order (default 4; the ``filtfilt`` pass doubles the effective order).
     """
 
     c3d_path = Path(c3d_path)
@@ -266,6 +281,35 @@ def load_session(
 
     c3d = read_c3d(c3d_path)
     n_frames = c3d.n_frames
+
+    # Preprocessing: zero-phase Butterworth low-pass on kinematics + kinetics.
+    filter_info: Optional[Dict[str, Any]] = None
+    markers = c3d.points
+    kinetics_cutoff: Optional[float] = None
+    if filter_cutoff_hz is not None:
+        point_nyq = 0.5 * c3d.point_rate if c3d.point_rate else 0.0
+        if 0.0 < filter_cutoff_hz < point_nyq:
+            from .io.filters import filter_markers
+
+            markers = filter_markers(
+                c3d.points, c3d.point_rate, filter_cutoff_hz, filter_order
+            )
+        else:
+            warnings.append(
+                f"marker low-pass skipped: cutoff {filter_cutoff_hz} Hz not below "
+                f"point Nyquist ({point_nyq} Hz)"
+            )
+        analog_nyq = 0.5 * c3d.analog_rate if c3d.analog_rate else 0.0
+        if 0.0 < filter_cutoff_hz < analog_nyq:
+            kinetics_cutoff = filter_cutoff_hz
+        filter_info = {
+            "type": "butterworth_lowpass",
+            "order": filter_order,
+            "cutoff_hz": filter_cutoff_hz,
+            "zero_phase": True,
+            "markers_filtered": markers is not c3d.points,
+            "kinetics_filtered": kinetics_cutoff is not None,
+        }
 
     # Master timelines. Point sample k is at (first_frame - 1 + k) / rate so the
     # analog samples for a point frame align at the start of that frame's block.
@@ -278,7 +322,12 @@ def load_session(
         else np.zeros(n_analog)
     )
 
-    force_plates = compute_force_plates(c3d, fz_threshold=fz_threshold)
+    force_plates = compute_force_plates(
+        c3d,
+        fz_threshold=fz_threshold,
+        filter_cutoff_hz=kinetics_cutoff,
+        filter_order=filter_order,
+    )
     for plate in force_plates:
         warnings.extend(plate.warnings)
 
@@ -336,7 +385,7 @@ def load_session(
         point_rate=c3d.point_rate,
         t_point=t_point,
         marker_labels=c3d.point_labels,
-        markers=c3d.points,
+        markers=markers,
         analog_rate=c3d.analog_rate,
         t_analog=t_analog,
         analog_per_point_frame=c3d.analog_per_point_frame,
@@ -348,5 +397,6 @@ def load_session(
         events=events,
         subject_meta=subject_meta,
         warnings=warnings,
+        filter_info=filter_info,
         c3d=c3d,
     )

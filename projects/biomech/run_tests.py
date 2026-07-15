@@ -27,6 +27,7 @@ from biomech.tests import SkipTest  # noqa: E402
 TEST_MODULES = [
     "biomech.tests.test_c3d",
     "biomech.tests.test_force_plate",
+    "biomech.tests.test_filters",
     "biomech.tests.test_treadmill",
     "biomech.tests.test_session",
     "biomech.tests.test_simmspline",

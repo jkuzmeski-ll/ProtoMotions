@@ -309,6 +309,30 @@ def _group_scale(group_scales: wp.array(dtype=wp.float64), g: wp.int32) -> wp.ve
 
 
 @wp.func
+def _group_scale_pert(
+    group_scales: wp.array(dtype=wp.float64),
+    g: wp.int32,
+    sp_group: wp.int32,  # group index whose scale is perturbed (-1 = none)
+    sp_axis: wp.int32,  # axis (0/1/2) of the perturbed group scale
+    sp_eps: wp.float64,  # perturbation added to that scale component
+) -> wp.vec3d:
+    """Group scale with an optional single-component perturbation (scale FD Jacobian)."""
+    if g < 0:
+        return wp.vec3d(wp.float64(1.0), wp.float64(1.0), wp.float64(1.0))
+    sx = group_scales[3 * g]
+    sy = group_scales[3 * g + 1]
+    sz = group_scales[3 * g + 2]
+    if g == sp_group:
+        if sp_axis == 0:
+            sx = sx + sp_eps
+        elif sp_axis == 1:
+            sy = sy + sp_eps
+        else:
+            sz = sz + sp_eps
+    return wp.vec3d(sx, sy, sz)
+
+
+@wp.func
 def _joint_trel(
     f: wp.int32,
     j: wp.int32,
@@ -339,6 +363,9 @@ def _joint_trel(
     fn_b: wp.array(dtype=wp.float64),
     fn_c: wp.array(dtype=wp.float64),
     fn_d: wp.array(dtype=wp.float64),
+    sp_group: wp.int32,   # group whose scale is perturbed (-1 = none)
+    sp_axis: wp.int32,    # axis (0/1/2) of the perturbed group scale
+    sp_eps: wp.float64,   # perturbation added to that scale component
 ) -> wp.mat44d:
     """Local joint transform ``Trel = Tp * Tj(q) * Tc^-1`` for joint ``j`` at frame ``f``.
 
@@ -396,8 +423,14 @@ def _joint_trel(
     # kind == 3 weld -> identity
 
     Tj = S.make_transform(R, t)
-    Tp = S.scale_translation(T_parent[j], _group_scale(group_scales, j_parent_group[j]))
-    Tc = S.scale_translation(T_child[j], _group_scale(group_scales, j_child_group[j]))
+    Tp = S.scale_translation(
+        T_parent[j],
+        _group_scale_pert(group_scales, j_parent_group[j], sp_group, sp_axis, sp_eps),
+    )
+    Tc = S.scale_translation(
+        T_child[j],
+        _group_scale_pert(group_scales, j_child_group[j], sp_group, sp_axis, sp_eps),
+    )
     return Tp * Tj * S.se3_inverse(Tc)
 
 
@@ -441,6 +474,7 @@ def _fk_kernel(
             j_parent_group, j_child_group, T_parent, T_child, axis_order, flip,
             slot_fid, slot_driver, rev_axis, uni_axis1, uni_axis2, fn_type, fn_p0,
             fn_p1, fn_kstart, fn_kcount, fn_x, fn_y, fn_b, fn_c, fn_d,
+            -1, 0, wp.float64(0.0),
         )
         pb = j_parent_body[b]
         if pb < 0:
@@ -492,6 +526,7 @@ def _fk_pert_kernel(
             j_parent_group, j_child_group, T_parent, T_child, axis_order, flip,
             slot_fid, slot_driver, rev_axis, uni_axis1, uni_axis2, fn_type, fn_p0,
             fn_p1, fn_kstart, fn_kcount, fn_x, fn_y, fn_b, fn_c, fn_d,
+            -1, 0, wp.float64(0.0),
         )
         pb = j_parent_body[b]
         if pb < 0:
@@ -537,6 +572,76 @@ def _marker_kernel(
     off = m_offset[m]
     local = wp.vec3d(off[0] * s[0], off[1] * s[1], off[2] * s[2])
     markers[f, m] = S.transform_point(world[f, m_body[m]], local)
+
+
+@wp.kernel
+def _fk_scales_pert_kernel(
+    q: wp.array2d(dtype=wp.float64),  # (F, ndof)
+    group_scales: wp.array(dtype=wp.float64),  # (3G,)
+    j_kind: wp.array(dtype=wp.int32),
+    j_parent_body: wp.array(dtype=wp.int32),
+    j_dof_start: wp.array(dtype=wp.int32),
+    j_parent_group: wp.array(dtype=wp.int32),
+    j_child_group: wp.array(dtype=wp.int32),
+    T_parent: wp.array(dtype=wp.mat44d),
+    T_child: wp.array(dtype=wp.mat44d),
+    axis_order: wp.array(dtype=wp.int32),
+    flip: wp.array(dtype=wp.vec3d),
+    slot_fid: wp.array2d(dtype=wp.int32),
+    slot_driver: wp.array2d(dtype=wp.int32),
+    rev_axis: wp.array(dtype=wp.vec3d),
+    uni_axis1: wp.array(dtype=wp.vec3d),
+    uni_axis2: wp.array(dtype=wp.vec3d),
+    fn_type: wp.array(dtype=wp.int32),
+    fn_p0: wp.array(dtype=wp.float64),
+    fn_p1: wp.array(dtype=wp.float64),
+    fn_kstart: wp.array(dtype=wp.int32),
+    fn_kcount: wp.array(dtype=wp.int32),
+    fn_x: wp.array(dtype=wp.float64),
+    fn_y: wp.array(dtype=wp.float64),
+    fn_b: wp.array(dtype=wp.float64),
+    fn_c: wp.array(dtype=wp.float64),
+    fn_d: wp.array(dtype=wp.float64),
+    eps: wp.float64,
+    num_bodies: wp.int32,
+    # output: world transforms with a single scale component perturbed (F, 3G, B)
+    world_spert: wp.array3d(dtype=wp.mat44d),
+):
+    f, p = wp.tid()
+    pg = p // 3
+    pa = p - pg * 3
+    for b in range(num_bodies):
+        Trel = _joint_trel(
+            f, b, -1, wp.float64(0.0), q, group_scales, j_kind, j_dof_start,
+            j_parent_group, j_child_group, T_parent, T_child, axis_order, flip,
+            slot_fid, slot_driver, rev_axis, uni_axis1, uni_axis2, fn_type, fn_p0,
+            fn_p1, fn_kstart, fn_kcount, fn_x, fn_y, fn_b, fn_c, fn_d,
+            pg, pa, eps,
+        )
+        pb = j_parent_body[b]
+        if pb < 0:
+            world_spert[f, p, b] = Trel
+        else:
+            world_spert[f, p, b] = world_spert[f, p, pb] * Trel
+
+
+@wp.kernel
+def _marker_scales_pert_kernel(
+    world_spert: wp.array3d(dtype=wp.mat44d),  # (F, 3G, B)
+    group_scales: wp.array(dtype=wp.float64),
+    m_body: wp.array(dtype=wp.int32),
+    m_offset: wp.array(dtype=wp.vec3d),
+    m_group: wp.array(dtype=wp.int32),
+    eps: wp.float64,
+    markers_pert: wp.array3d(dtype=wp.vec3d),  # (F, 3G, M)
+):
+    f, p, m = wp.tid()
+    pg = p // 3
+    pa = p - pg * 3
+    s = _group_scale_pert(group_scales, m_group[m], pg, pa, eps)
+    off = m_offset[m]
+    local = wp.vec3d(off[0] * s[0], off[1] * s[1], off[2] * s[2])
+    markers_pert[f, p, m] = S.transform_point(world_spert[f, p, m_body[m]], local)
 
 
 @wp.kernel
@@ -788,6 +893,67 @@ class WarpSkeleton:
             device=d,
         )
         return jac
+
+    def _scale_pert_buffers(self, Fr: int):
+        """Cached device scratch for the scale-Jacobian, keyed by frame count."""
+        cache = getattr(self, "_scalebuf", None)
+        if cache is None:
+            cache = {}
+            self._scalebuf = cache
+        if Fr not in cache:
+            t = self.topo
+            d = self.device
+            g3 = 3 * t.num_groups
+            world_spert = wp.zeros((Fr, g3, t.num_bodies), dtype=wp.mat44d, device=d)
+            mk_base = wp.zeros((Fr, t.num_markers), dtype=wp.vec3d, device=d)
+            mk_pert = wp.zeros((Fr, g3, t.num_markers), dtype=wp.vec3d, device=d)
+            cache[Fr] = (world_spert, mk_base, mk_pert)
+        return cache[Fr]
+
+    def markers_scale_perturbed_wp(self, d_q, d_scales, eps: float = 1e-5):
+        """Device-resident one-sided FD basis for the group-scale Jacobian.
+
+        With poses ``d_q`` (F, ndof) and current ``d_scales`` (3G,) fixed, this returns
+        ``(mk_base, mk_pert)`` where ``mk_base`` is ``(F, M)`` marker world positions at
+        the current scales and ``mk_pert`` is ``(F, 3G, M)`` the marker positions with
+        each individual scale component ``p`` bumped by ``+eps``. The marker fitter
+        differences these on the GPU to assemble the 3G x 3G Gauss-Newton system without
+        any host round trips per scale variable. Nothing is copied to the host.
+        """
+        Fr = int(d_q.shape[0])
+        t = self.topo
+        d = self.device
+        g3 = 3 * t.num_groups
+        world_spert, mk_base, mk_pert = self._scale_pert_buffers(Fr)
+        epsd = wp.float64(eps)
+        # Base FK + markers at current scales (fills mk_base, reuse d_world scratch).
+        d_world, d_mk = self._run_wp(d_q, d_scales)
+        wp.copy(mk_base, d_mk)
+        # Perturbed world transforms, one scale component per p in parallel.
+        wp.launch(
+            _fk_scales_pert_kernel,
+            dim=(Fr, g3),
+            inputs=[
+                d_q, d_scales, self.d_j_kind, self.d_j_parent_body,
+                self.d_j_dof_start, self.d_j_parent_group, self.d_j_child_group,
+                self.d_T_parent, self.d_T_child, self.d_axis_order, self.d_flip,
+                self.d_slot_fid, self.d_slot_driver, self.d_rev_axis,
+                self.d_uni_axis1, self.d_uni_axis2, self.d_fn_type, self.d_fn_p0,
+                self.d_fn_p1, self.d_fn_kstart, self.d_fn_kcount, self.d_fn_x,
+                self.d_fn_y, self.d_fn_b, self.d_fn_c, self.d_fn_d, epsd, t.num_bodies,
+            ],
+            outputs=[world_spert],
+            device=d,
+        )
+        wp.launch(
+            _marker_scales_pert_kernel,
+            dim=(Fr, g3, t.num_markers),
+            inputs=[world_spert, d_scales, self.d_m_body, self.d_m_offset,
+                    self.d_m_group, epsd],
+            outputs=[mk_pert],
+            device=d,
+        )
+        return mk_base, mk_pert
 
     def marker_jacobian_wrt_q_fd(
         self,
