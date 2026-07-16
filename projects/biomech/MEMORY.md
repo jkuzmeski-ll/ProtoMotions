@@ -319,11 +319,26 @@ biomech/
   1e-9). **Result on the S001 walk window** (`tools/check_ankle_fix.py`, A/B): ankle goes
   from entirely-negative (R mean -13, max -5; never dorsiflexes) to centred and crossing
   into dorsiflexion (R mean -4.9, max +1.6; L mean +2.4, max +12.6), MTP now fits (R +12,
-  L range 35 deg), marker RMS 14.7 -> 13.9 mm. **NOT yet wired into `contact/pipeline.py`
-  / the figure + S001-export tools** — those still use the stock sparse map; next step is
-  to call `place_foot_markers` in the reconstruction path and regenerate the committed S001
-  asset/motion + figs 09/10. Subtalar is still `locked` (0) in the model; left as-is (PiG
-  foot markers don't reliably resolve inversion/eversion).
+  L range 35 deg), marker RMS 14.7 -> 13.9 mm. **Now WIRED IN** (2026-07):
+  `run_subject_pipeline` (`enrich_foot_markers=True`, `placement_window_len=60`),
+  `tools/make_s001_ik_figures.py` and `tools/export_s001_subject.py` all call
+  `place_foot_markers` in the reconstruction path. The figures tool pickles the *enriched*
+  spec into the cache (`spec_pickle` in `_s001_ik_cache.npz`); the exporter loads that exact
+  spec so the MJCF (MTP now a hinge, not a weld -> 33 actions; ankle-neutral bake) stays
+  self-consistent with the cached poses. Regenerated committed asset
+  (`protomotions/data/assets/mjcf/biomech_rajagopal.xml`), motion
+  (`biomech_s001_walk.motion`), and figs 09/10/11 (RMS 13.8 mm). `test_pipeline_real_s001`
+  passes with enrichment on. **L/R asymmetry re-audited and confirmed NOT a bug**
+  (`tools/diagnose_ankle_asymmetry.py`): raw static + dynamic foot/leg markers have 0%
+  dropout and are mirror-symmetric on both sides; both subtalars locked, both MTPs unlocked
+  identically; ankle pin axes are anatomically mirror-symmetric. Full-cycle phase-aligned
+  ankle traces correlate 0.977 (mean R-L diff -1.1 deg, RMS 2 deg) -- per-frame overlay only
+  *looks* asymmetric because L/R legs are ~50%% out of phase. Residual real asymmetry is
+  small: static ankle neutral R -10.3 / L -12.9 deg (kept per-side, PiG convention), and
+  offset mirror mismatches (HEE2/HEE3 ~10-13 mm, hallux ~11 mm) trace directly to the raw
+  capture (e.g. the L hallux marker sits ~19 mm more lateral than R). Subtalar still
+  `locked` (0) in the model; left as-is (PiG foot markers don't reliably resolve
+  inversion/eversion).
 
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
