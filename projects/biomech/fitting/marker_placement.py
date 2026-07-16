@@ -77,11 +77,33 @@ class MarkerPlacement:
 
     added: List[str]                 # new model marker names added to the spec
     reseated: List[str]              # existing model markers whose offset changed
+    unlocked: List[str]              # coordinate names unlocked (e.g. mtp_angle_{r,l})
     offsets: Dict[str, np.ndarray]   # model name -> body-frame offset (unscaled, meters)
     residual_mm: Dict[str, float]    # model name -> static placement residual (mm)
     group_scales: np.ndarray         # scales used for placement (from the static fit)
     poses: np.ndarray                # (Fw, ndof) fitted static poses used for placement
     window: Tuple[int, int]          # frame window used for the static fit
+
+
+def unlock_mtp(spec: SkeletonSpec, sides: Sequence[str] = ("r", "l")) -> List[str]:
+    """Unlock the ``mtp_angle_{r,l}`` coordinates so the MTP DOF can be fit.
+
+    The stock Rajagopal2015 model ships the metatarsophalangeal joint ``locked`` (frozen
+    at 0), which is the standard choice when there is no marker distal to the MTP. Once a
+    hallux/toes marker is added (see :func:`place_foot_markers`) the MTP becomes
+    observable, so we free it. Returns the list of coordinate names unlocked.
+    """
+    unlocked: List[str] = []
+    for side in sides:
+        try:
+            joint = spec.joint(f"mtp_{side}")
+        except KeyError:
+            continue
+        for coord in joint.coordinates:
+            if coord.locked:
+                coord.locked = False
+                unlocked.append(coord.name)
+    return unlocked
 
 
 def _body_group_map(spec: SkeletonSpec) -> Dict[str, int]:
@@ -119,6 +141,7 @@ def place_foot_markers(
     frame_range: Optional[Tuple[int, int]] = None,
     sides: Sequence[str] = ("R", "L"),
     reseat: bool = True,
+    unlock_mtp_joint: bool = True,
 ) -> MarkerPlacement:
     """Add the rich foot markers to ``spec`` (in place) via static marker placement.
 
@@ -209,9 +232,15 @@ def place_foot_markers(
             residual_mm[model_name] = resid
             added.append(model_name)
 
+    # 5) Unlock the MTP joint now that a toes marker constrains it.
+    unlocked: List[str] = []
+    if unlock_mtp_joint:
+        unlocked = unlock_mtp(spec, sides=tuple(s.lower() for s in sides))
+
     return MarkerPlacement(
         added=added,
         reseated=reseated,
+        unlocked=unlocked,
         offsets=offsets,
         residual_mm=residual_mm,
         group_scales=group_scales,
