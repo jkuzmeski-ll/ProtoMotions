@@ -210,6 +210,8 @@ def run_subject_pipeline(
     free_params: Tuple[str, ...] = ("k_bed", "hc_alpha"),
     registration: str = "percentile",
     objective: str = "perframe",
+    enrich_foot_markers: bool = True,
+    placement_window_len: int = 60,
 ) -> SubjectPipelineResult:
     """Run reconstruction + subject-sole contact calibration on a captured session.
 
@@ -245,6 +247,13 @@ def run_subject_pipeline(
     from biomech.skeleton.skeleton import WarpSkeleton
 
     mm = mapping or s001_marker_map()
+    if enrich_foot_markers:
+        from biomech.fitting.marker_placement import place_foot_markers
+        n_static = int(np.asarray(static_session.markers).shape[0])
+        place_foot_markers(
+            spec, static_session, mapping=mm, marker_config=marker_config,
+            device=device, frame_range=(0, min(placement_window_len, n_static)),
+        )
     model_names = WarpSkeleton(spec, device=device).marker_names()
     obs_all, present = observations_from_session(trial_session, model_names, mm)
 
