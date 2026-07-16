@@ -340,6 +340,31 @@ biomech/
   `locked` (0) in the model; left as-is (PiG foot markers don't reliably resolve
   inversion/eversion).
 
+- **Subtalar unlock evaluated & REJECTED** (`tools/check_subtalar_unlock.py`). With the
+  enriched foot set the subtalar *is* observable and unlocking lowers marker RMS ~0.5 mm,
+  but it **rails at the +/-20 deg anatomical limit 12-16%% of frames** and shifts the MTP
+  ~8-10 deg -- i.e. it acts as an error sink for forefoot marker/soft-tissue error, not
+  clean inversion/eversion. Registering a subtalar static neutral makes it worse (neutral
+  comes out at a non-physiological +16/+13 deg; railing climbs to 32-34%%). Kept **locked**
+  (both sides). NOTE: earlier claim of "only left subtalar locked" was WRONG -- both are
+  locked in the stock model and there is no L/R subtalar asymmetry.
+
+- **Thigh/shank cluster collapse DONE** (`fitting/cluster_collapse.py`;
+  `tests/test_cluster_collapse.py`, 3 tests). The soft-tissue tracking plates
+  (`RTH1/2/3`, `RTB1/2/3` + L) carried the largest per-marker residual (RTB3 ~64 mm) and
+  fed the pose IK three mutually-inconsistent constraints per segment, dragging the solve
+  (and pinning a group scale to the 0.5 bound). `collapse_clusters(spec, mapping)` adds one
+  centroid marker per cluster (offset = mean of member offsets, refined by the fitter) and
+  remaps it to the *set* of member capture labels; `build_observations` now averages a
+  tuple-valued mapping per frame (NaN-aware). A/B (`tools/check_cluster_collapse.py`):
+  joint-angle roughness improved on 7/10 lower-limb DOFs (only hip_rotation_l, the lost
+  long-axis info, got rougher -- surface plates resolve that poorly anyway), angles stay
+  physiological, group scales recovered to [0.80, 1.35] (was railing at 0.50), and residual
+  on the retained trustworthy markers dropped 13.1 -> 7.6 mm. **Wired in default-on**
+  (`run_subject_pipeline(collapse_lower_clusters=True)`, figures tool); export inherits it
+  via the pickled spec. Regenerated asset/motion/figs (fig 10 median RMS now 8.6 mm).
+  `test_pipeline_real_s001` still passes.
+
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
   0.986x weight) + per-foot GRF, (2) Z-up skeleton standing on the registered ground,
