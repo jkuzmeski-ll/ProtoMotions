@@ -298,6 +298,33 @@ biomech/
 
 ## Immediate next actions
 
+- **Foot marker map + ankle-angle fix DONE** (`fitting/marker_placement.py` +
+  `fitting/marker_map.py`; `tests/test_marker_placement.py`, 5 tests). The stock Rajagopal
+  foot marker set was too sparse and mis-seated: only `RCAL`/`RMT5`/`RTOE` on `calcn`,
+  nothing on `toes`, and `RTOE` placed at the toe tip while the S001 capture marker is on
+  the **met-2 head** (~2.7 cm forward, which the fit was absorbing as a spurious foot
+  pitch). The S001 C3D actually carries `HEE/HEE2/HEE3` (calcaneus triangle), `MTH1/MTH5`
+  (met heads), `TOE` (met-2), `HLX` (hallux) — all 100% present in both static + dynamic.
+  `place_foot_markers(spec, static_session)` runs the **OpenSim marker-placement step**:
+  fit the static (Cal 101) trial with the stock markers, then express each rich foot marker
+  in its owning body frame -> add `RCAL2/RCAL3/RMT1` + `RTOE_TIP` (on `toes`) and re-seat
+  `RCAL/RTOE/RMT5`. Round-trips to <2.5 cm on real static markers. It also (a) **unlocks
+  the MTP joint** (stock model ships `mtp_angle_{r,l}` `locked=true`) so the new toes marker
+  makes `mtp_angle` observable, and (b) **re-zeros the ankle at the static neutral**
+  (`register_ankle_neutral`): the fitted static stand reads ~ -10 deg ankle (matches PiG
+  `RStaticPlantFlex` = 9.7/8.8 deg in `S001.mp`), a model-neutral offset that was biasing
+  the *entire* dynamic ankle trace negative. The re-zero bakes `Rz(-off)` into the ankle
+  joint's `T_child`, so with `q' = q - off` every body's world pose is provably unchanged
+  (contact/export untouched) while the coordinate reads 0 at standing (unit-tested to
+  1e-9). **Result on the S001 walk window** (`tools/check_ankle_fix.py`, A/B): ankle goes
+  from entirely-negative (R mean -13, max -5; never dorsiflexes) to centred and crossing
+  into dorsiflexion (R mean -4.9, max +1.6; L mean +2.4, max +12.6), MTP now fits (R +12,
+  L range 35 deg), marker RMS 14.7 -> 13.9 mm. **NOT yet wired into `contact/pipeline.py`
+  / the figure + S001-export tools** — those still use the stock sparse map; next step is
+  to call `place_foot_markers` in the reconstruction path and regenerate the committed S001
+  asset/motion + figs 09/10. Subtalar is still `locked` (0) in the model; left as-is (PiG
+  foot markers don't reliably resolve inversion/eversion).
+
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
   0.986x weight) + per-foot GRF, (2) Z-up skeleton standing on the registered ground,
