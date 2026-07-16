@@ -68,13 +68,18 @@ DEVICE = "cuda"
 WIN_LEN = 150          # contiguous walk frames to reconstruct (~1.5 s at 100 Hz)
 CALIB_LEN = 60         # mid-window slice used to calibrate scales + offsets
 
-# Bilateral joint pairs for the gait-angle grid.
+# Bilateral joint pairs for the gait-angle grid (full enriched lower-body DOF set).
+# The MTP is now fit (unlocked once a toes/hallux marker was added); the subtalar is
+# intentionally left locked -- surface markers can't cleanly resolve inversion/eversion
+# (it rails at the anatomical limit if freed), so it is shown flat at 0 for honesty.
 JOINT_PAIRS = [
     ("hip flexion", "hip_flexion_r", "hip_flexion_l"),
     ("hip adduction", "hip_adduction_r", "hip_adduction_l"),
     ("hip rotation", "hip_rotation_r", "hip_rotation_l"),
     ("knee angle", "knee_angle_r", "knee_angle_l"),
     ("ankle angle", "ankle_angle_r", "ankle_angle_l"),
+    ("subtalar angle (locked)", "subtalar_angle_r", "subtalar_angle_l"),
+    ("MTP angle", "mtp_angle_r", "mtp_angle_l"),
 ]
 
 
@@ -222,7 +227,11 @@ def fig_gait_angles(R):
     fzr = R["grf"]["R"][:, 2] if "R" in R["grf"] else None
     fzl = R["grf"]["L"][:, 2] if "L" in R["grf"] else None
 
-    fig, axes = plt.subplots(2, 3, figsize=(14, 7.5), sharex=True)
+    n = len(JOINT_PAIRS)
+    ncols = 4
+    nrows = int(np.ceil((n + 1) / ncols))  # +1 panel for the legend
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.6 * ncols, 3.7 * nrows),
+                             sharex=True)
     axes = axes.ravel()
     for ax, (title, rn, ln) in zip(axes, JOINT_PAIRS):
         if fzr is not None:
@@ -235,19 +244,26 @@ def fig_gait_angles(R):
         ax.set_title(title)
         ax.set_ylabel("angle (deg)")
         ax.grid(alpha=0.3)
-    # last panel: legend + note
-    axes[-1].axis("off")
+    # legend panel right after the last joint; hide any trailing empties
+    legend_ax = axes[n]
+    legend_ax.axis("off")
     handles = [
         plt.Line2D([], [], color="tab:red", lw=2, label="right joint angle"),
         plt.Line2D([], [], color="tab:blue", lw=2, ls="--", label="left joint angle"),
         plt.Rectangle((0, 0), 1, 1, color="tab:red", alpha=0.10, label="right foot stance (measured GRF)"),
         plt.Rectangle((0, 0), 1, 1, color="tab:blue", alpha=0.10, label="left foot stance (measured GRF)"),
     ]
-    axes[-1].legend(handles=handles, loc="center", fontsize=11, frameon=False)
-    for ax in axes[3:6]:
-        ax.set_xlabel("time (s)")
+    legend_ax.legend(handles=handles, loc="center", fontsize=11, frameon=False)
+    for k in range(n + 1, len(axes)):
+        axes[k].axis("off")
+    # x-axis label on the lowest joint panel of each column (sharex hides the rest)
+    for c in range(ncols):
+        col = [i for i in range(n) if i % ncols == c]
+        if col:
+            axes[max(col)].set_xlabel("time (s)")
     fig.suptitle("S001 treadmill walk: IK-reconstructed lower-body joint angles\n"
-                 "(bilaterally symmetric, phase-locked to the independently measured GRF)",
+                 "(full enriched DOF set incl. MTP; subtalar locked; phase-locked to "
+                 "the independently measured GRF)",
                  fontsize=13)
     fig.tight_layout()
     fig.savefig(OUT / "09_s001_gait_angles.png", dpi=130)
@@ -267,6 +283,30 @@ def fig_marker_fit(R):
     pm_s = pm[ok][order]
     nm_s = [names[i] for i in np.where(ok)[0][order]]
 
+    # colour each bar by anatomical region, calling out the newly-added foot markers.
+    body_of = {m.name: m.body for m in R["spec"].markers}
+    foot_bodies = {"calcn_r", "calcn_l", "toes_r", "toes_l"}
+    lower_bodies = foot_bodies | {
+        "pelvis", "femur_r", "femur_l", "tibia_r", "tibia_l",
+        "talus_r", "talus_l", "patella_r", "patella_l",
+    }
+    new_foot = {
+        "RCAL2", "RCAL3", "RMT1", "RTOE_TIP",
+        "LCAL2", "LCAL3", "LMT1", "LTOE_TIP",
+    }
+
+    def _bar_color(name):
+        if name in new_foot:
+            return "crimson"
+        b = body_of.get(name)
+        if b in foot_bodies:
+            return "darkorange"
+        if b in lower_bodies:
+            return "teal"
+        return "0.6"
+
+    colors = [_bar_color(n) for n in nm_s]
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5.5),
                                    gridspec_kw={"width_ratios": [1, 2.2]})
     ax1.plot(t, rms, color="tab:purple", lw=1.5)
@@ -280,13 +320,24 @@ def fig_marker_fit(R):
     ax1.grid(alpha=0.3)
 
     x = np.arange(len(pm_s))
-    ax2.bar(x, pm_s, color="teal")
+    ax2.bar(x, pm_s, color=colors)
     ax2.set_xticks(x)
     ax2.set_xticklabels(nm_s, rotation=90, fontsize=6)
+    for lbl, nm in zip(ax2.get_xticklabels(), nm_s):
+        if nm in new_foot:
+            lbl.set_color("crimson")
+            lbl.set_fontweight("bold")
     ax2.set_ylabel("per-marker RMS (mm)")
     ax2.set_title("Per-marker reprojection RMS (sorted) — "
                   "residual is dominated by PiG↔Rajagopal marker-set offsets")
     ax2.grid(alpha=0.3, axis="y")
+    region_handles = [
+        plt.Rectangle((0, 0), 1, 1, color="crimson", label="new foot marker (added)"),
+        plt.Rectangle((0, 0), 1, 1, color="darkorange", label="foot marker (re-seated)"),
+        plt.Rectangle((0, 0), 1, 1, color="teal", label="other lower body"),
+        plt.Rectangle((0, 0), 1, 1, color="0.6", label="upper body"),
+    ]
+    ax2.legend(handles=region_handles, loc="upper left", fontsize=9, frameon=True)
 
     fig.suptitle("S001 marker-fit quality (real capture)", fontsize=13)
     fig.tight_layout()
