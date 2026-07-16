@@ -48,6 +48,7 @@ from biomech.contact.pipeline import (  # noqa: E402
 from biomech.export.motion import build_motion  # noqa: E402
 from biomech.fitting.ik import MarkerIKConfig, solve_marker_ik  # noqa: E402
 from biomech.fitting.marker_fitter import MarkerFitConfig  # noqa: E402
+from biomech.fitting.cluster_collapse import collapse_clusters  # noqa: E402
 from biomech.fitting.marker_map import (  # noqa: E402
     observations_from_session,
     s001_marker_map,
@@ -93,6 +94,10 @@ def reconstruct():
     static = load_session(str(CAL_C3D), filter_cutoff_hz=None)
     spec = parse_osim(str(ROOT / "models" / "rajagopal_data" / "Rajagopal2015.osim"))
     mm = s001_marker_map()
+    # collapse the thigh/shank soft-tissue tracking clusters to one centroid each so the
+    # noisy plate markers stop dragging the pose (they carry the largest residual).
+    mm, centroids = collapse_clusters(spec, mm)
+    print(f"  collapsed clusters -> centroids: {centroids}")
     # enrich the sparse stock foot marker set from the static trial (adds the
     # calcaneus cluster / met-1 / hallux markers, re-seats TOE, unlocks the MTP, and
     # re-zeros the ankle at the standing neutral) before building the skeleton.

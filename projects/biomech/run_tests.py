@@ -53,6 +53,7 @@ TEST_MODULES = [
     "biomech.tests.test_hydroelastic",
     "biomech.tests.test_marker_map",
     "biomech.tests.test_marker_placement",
+    "biomech.tests.test_cluster_collapse",
     "biomech.tests.test_s001_end_to_end",
     "biomech.tests.test_foot_geometry",
     "biomech.tests.test_contact_pipeline",

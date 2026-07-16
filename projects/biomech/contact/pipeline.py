@@ -212,6 +212,7 @@ def run_subject_pipeline(
     objective: str = "perframe",
     enrich_foot_markers: bool = True,
     placement_window_len: int = 60,
+    collapse_lower_clusters: bool = True,
 ) -> SubjectPipelineResult:
     """Run reconstruction + subject-sole contact calibration on a captured session.
 
@@ -247,6 +248,9 @@ def run_subject_pipeline(
     from biomech.skeleton.skeleton import WarpSkeleton
 
     mm = mapping or s001_marker_map()
+    if collapse_lower_clusters:
+        from biomech.fitting.cluster_collapse import collapse_clusters
+        mm, _ = collapse_clusters(spec, mm)
     if enrich_foot_markers:
         from biomech.fitting.marker_placement import place_foot_markers
         n_static = int(np.asarray(static_session.markers).shape[0])
