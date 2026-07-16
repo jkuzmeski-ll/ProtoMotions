@@ -103,13 +103,16 @@ def main() -> int:
     # net whole-body forward belt speed (both belts read 1.5 m/s for S001 walk).
     belt_speed = _load_belt_speed(window)
 
-    # 1. asset (regenerated with the S001 subject's group scales)
+    # 1. asset (regenerated with the S001 subject's group scales). Render each body with
+    #    its actual OpenSim bone mesh(es) (visual-only) instead of capsule placeholders;
+    #    bodies without a mesh fall back to capsules.
     asset_path = write_biomech_asset(
         spec,
         asset_file_name=_ASSET_NAME,
         group_scales=scales,
         coupled_knee="coupled",
         repo_root=_REPO,
+        bone_meshes=True,
     )
     print(f"wrote asset -> {asset_path}")
 

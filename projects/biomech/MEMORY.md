@@ -243,7 +243,12 @@ emits **no `<geom>`** (kinematic/dynamic only), so the renderer draws nothing;
 `export_mjcf(visual_geoms=True)` (default in `write_biomech_asset`) adds non-colliding
 capsule bones + leaf spheres (`density=0`, `contype/conaffinity=0`, explicit `<inertial>`
 kept → FK/dynamics unchanged). The viewer needs `pyglet>=2.0` (pip-installed).
-**189 tests pass total.**
+**189 tests pass total.** UPDATE: `export_s001_subject.py` now passes
+`write_biomech_asset(..., bone_meshes=True)`, so the committed asset renders the actual
+OpenSim Rajagopal bone meshes (79 visual-only STL geoms scaled per-body by the subject
+group scales; capsule fallback for meshless bodies) instead of capsules. Meshes live in
+`protomotions/data/assets/mesh/biomech_rajagopal/` (regenerate via
+`tools/convert_bone_meshes.py`); MuJoCo compiles the asset (ngeom=nmesh=79).
 **TM2OG (treadmill→overground) DONE** (`export/tm2og.py`): the S001 walk clip walked in
 place (treadmill); a physics sim needs it to translate over ground. Port of Jung & Lee,
 *Sensors* 21(3):786, 2021 **virtual-origin** method (Eqs. 2/6/7): the backward-moving
