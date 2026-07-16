@@ -163,6 +163,19 @@ def build_observations(
         cap = mapping.model_to_capture.get(mname)
         if cap is None:
             continue
+        if isinstance(cap, (list, tuple)):
+            # centroid marker: per-frame NaN-aware mean of several capture labels
+            cols = [label_index[c] for c in cap if c in label_index]
+            if not cols:
+                continue
+            pts = capture_points[:, cols, :]  # (F, k, 3)
+            with np.errstate(invalid="ignore"):
+                import warnings as _warnings
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore", category=RuntimeWarning)
+                    obs[:, mi, :] = np.nanmean(pts, axis=1)  # NaN where all members missing
+            present[mi] = True
+            continue
         ci = label_index.get(cap)
         if ci is None:
             continue
@@ -222,19 +235,19 @@ def mapping_coverage(
     mapped = []
     missing_in_capture = []
     unmapped_model = []
+    used_caps: Set[str] = set()
     for mname in model_marker_names:
         cap = mapping.model_to_capture.get(mname)
         if cap is None:
             unmapped_model.append(mname)
-        elif cap in cap_set:
+            continue
+        caps = cap if isinstance(cap, (list, tuple)) else (cap,)
+        present_caps = [c for c in caps if c in cap_set]
+        if present_caps:
             mapped.append(mname)
+            used_caps.update(present_caps)
         else:
             missing_in_capture.append(mname)
-    used_caps = {
-        mapping.model_to_capture[m]
-        for m in model_marker_names
-        if mapping.model_to_capture.get(m) in cap_set
-    }
     unused_capture = [c for c in capture_labels if c not in used_caps]
     return {
         "mapped": mapped,
