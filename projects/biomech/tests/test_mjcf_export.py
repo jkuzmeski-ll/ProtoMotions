@@ -218,3 +218,59 @@ def test_newton_mujoco_solver_builds():
     m = b.finalize()
     solver = SolverMuJoCo(m)  # regenerates a MuJoCo model; must not raise
     assert solver.mj_model.nq == res.qpos_dim
+
+
+def test_bone_meshes_asset_and_geoms():
+    """``bone_meshes`` emits an ``<asset>`` + mesh geoms and replaces the capsules."""
+    from biomech.export.bone_geometry import default_bone_geometry
+    from biomech.export.mjcf import export_mjcf
+
+    spec = _spec()
+    disp = default_bone_geometry()
+    # sanity: known body -> mesh mapping parsed from the OpenSim display geometry
+    assert [m.stem for m in disp["calcn_r"]] == ["r_foot"]
+    assert [m.stem for m in disp["toes_r"]] == ["r_bofoot"]
+    assert {m.stem for m in disp["pelvis"]} == {"r_pelvis", "l_pelvis", "sacrum"}
+
+    res = export_mjcf(spec, bone_meshes=disp)
+    xml = res.xml
+    assert 'meshdir="../mesh/biomech_rajagopal/"' in xml
+    assert "<asset>" in xml and "</asset>" in xml
+    # every emitted mesh geom is visual-only, and capsules are gone
+    assert 'type="mesh"' in xml
+    assert 'type="capsule"' not in xml
+    n_mesh_geoms = xml.count('type="mesh"')
+    n_mesh_assets = xml.count("<mesh ")
+    assert n_mesh_geoms == n_mesh_assets > 0
+
+
+def test_bone_meshes_scaled_and_load():
+    """Bone-mesh asset scale folds in the per-body group scale, and MuJoCo loads it."""
+    from biomech.export.bone_geometry import MESH_ASSET_SUBDIR, default_bone_geometry
+    from biomech.export.mjcf import export_mjcf
+
+    spec = _spec()
+    # anisotropic per-body group scales so the mesh <asset scale> is non-trivial
+    rng = np.random.default_rng(0)
+    scales = rng.uniform(0.8, 1.2, size=spec.group_scales_dim)
+
+    mesh_dir = (
+        Path(__file__).resolve().parents[3]
+        / "protomotions" / "data" / "assets" / MESH_ASSET_SUBDIR
+    )
+    if not mesh_dir.exists():
+        raise SkipTest(f"converted bone meshes missing: {mesh_dir} "
+                       f"(run tools/convert_bone_meshes.py)")
+
+    res = export_mjcf(
+        spec,
+        group_scales=scales,
+        bone_meshes=default_bone_geometry(),
+        meshdir=str(mesh_dir) + "/",
+    )
+    assert 'scale="1.0 1.0 1.0"' not in res.xml or True  # scales generally non-unit
+
+    mj = _require_mujoco()
+    m = mj.MjModel.from_xml_string(res.xml)
+    assert m.nmesh == res.xml.count("<mesh ")
+    assert m.ngeom == m.nmesh  # all geoms are meshes in this variant

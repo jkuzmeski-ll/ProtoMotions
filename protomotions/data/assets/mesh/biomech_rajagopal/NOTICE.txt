@@ -1,0 +1,9 @@
+Bone meshes for the `biomech` robot.
+
+Source: OpenSim Rajagopal2015 musculoskeletal model geometry, as re-hosted by the
+O2MConverter project (https://github.com/aikkala/O2MConverter, Apache-2.0). Converted
+from the original ASCII VTK PolyData (.vtp) to STL by
+projects/biomech/tools/convert_bone_meshes.py. Regenerate with that tool; do not edit
+these files by hand.
+
+These meshes are visual-only in the MJCF (density=0, contype/conaffinity=0).

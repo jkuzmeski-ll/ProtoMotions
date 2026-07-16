@@ -38,6 +38,7 @@ from typing import Optional
 
 import numpy as np
 
+from biomech.export.bone_geometry import MESHDIR_REL, BoneMesh
 from biomech.osim.spec import (
     ConstantFunctionSpec,
     JointSpec,
@@ -276,6 +277,8 @@ def export_mjcf(
     marker_sites: bool = True,
     visual_geoms: bool = False,
     subject_mass: Optional[float] = None,
+    bone_meshes: Optional[dict[str, list[BoneMesh]]] = None,
+    meshdir: str = MESHDIR_REL,
 ) -> MjcfExportResult:
     """Build an MJCF string for the Newton MuJoCo solver from a fitted skeleton.
 
@@ -288,6 +291,15 @@ def export_mjcf(
     (parent origin -> each child attachment, sphere at leaves) so the skeleton is visible
     in a renderer. Geoms carry ``density=0`` + ``contype/conaffinity=0`` and the bodies
     keep their explicit ``<inertial>``, so FK/dynamics are unchanged.
+
+    ``bone_meshes``: optional ``body name -> [BoneMesh, ...]`` (e.g. from
+    :func:`biomech.export.bone_geometry.default_bone_geometry`). When given, each body is
+    drawn with its actual bone mesh(es) instead of the capsule placeholder: a ``<asset>``
+    block of ``<mesh>`` entries (scaled by the subject's per-body group scale) plus
+    non-colliding ``type="mesh"`` geoms. ``meshdir`` is the MJCF-relative mesh directory
+    written to ``<compiler meshdir=...>``. Bodies without a bone mesh fall back to the
+    capsule/sphere placeholder when ``visual_geoms`` is set. Meshes are visual-only
+    (``density=0`` + ``contype/conaffinity=0``), so FK/dynamics are unchanged.
 
     ``subject_mass``: if given (kg), rescale the model's segment masses so the whole-body
     mass equals the subject's measured mass (e.g. from the Plug-in-Gait ``.mp``), preserving
@@ -375,11 +387,39 @@ def export_mjcf(
 
     # ---- build XML ----
     name = model_name or spec.name or "biomech"
+
+    # Restrict bone meshes to bodies actually present in this skeleton, and pre-scale
+    # each mesh by its body's per-body group scale (generic display scale is folded in).
+    body_meshes: dict[str, list[BoneMesh]] = {}
+    mesh_assets: list[tuple[str, str, np.ndarray]] = []  # (name, file, scale3)
+    if bone_meshes:
+        seen: set[str] = set()
+        for b in spec.bodies:
+            ms = bone_meshes.get(b.name)
+            if not ms:
+                continue
+            body_meshes[b.name] = ms
+            cs = sm.of(b.name)
+            for m in ms:
+                if m.stem in seen:
+                    continue
+                seen.add(m.stem)
+                mesh_assets.append((m.stem, f"{m.stem}.stl", np.asarray(m.scale) * cs))
+
     lines: list[str] = []
     lines.append(f'<mujoco model="{name}">')
-    lines.append(
-        '  <compiler angle="radian" autolimits="true" balanceinertia="true"/>'
-    )
+    compiler = '  <compiler angle="radian" autolimits="true" balanceinertia="true"'
+    if mesh_assets:
+        compiler += f' meshdir="{meshdir}"'
+    compiler += "/>"
+    lines.append(compiler)
+    if mesh_assets:
+        lines.append("  <asset>")
+        for mname, mfile, mscale in mesh_assets:
+            lines.append(
+                f'    <mesh name="{mname}" file="{mfile}" scale="{_fmt(mscale)}"/>'
+            )
+        lines.append("  </asset>")
     lines.append("  <worldbody>")
 
     body_order: list[str] = []
@@ -387,6 +427,8 @@ def export_mjcf(
 
     def _emit_geoms(body_name: str, indent: str):
         """Visual-only capsules (parent->child bones) + a sphere at leaf bodies."""
+        if body_name in body_meshes:
+            return  # bone mesh replaces the capsule placeholder for this body
         if not visual_geoms:
             return
         style = (
@@ -409,6 +451,30 @@ def export_mjcf(
             drew = True
         if not drew:
             lines.append(f'{indent}<geom type="sphere" size="0.035" pos="0 0 0" {style}/>')
+
+    def _emit_mesh_geoms(body_name: str, indent: str):
+        """Visual-only bone mesh geom(s) for a body (identity placement for Rajagopal)."""
+        from biomech.skeleton import spatial as S
+
+        style = (
+            'group="1" contype="0" conaffinity="0" density="0" '
+            'rgba="0.90 0.88 0.80 1"'
+        )
+        for m in body_meshes.get(body_name, []):
+            attrs = f'type="mesh" mesh="{m.stem}"'
+            if not m.is_identity_placement:
+                rx, ry, rz = (float(v) for v in m.transform[:3])
+                tx, ty, tz = (float(v) for v in m.transform[3:6])
+                R = (
+                    S.rodrigues_np(_UNIT_X, rx)
+                    @ S.rodrigues_np(_UNIT_Y, ry)
+                    @ S.rodrigues_np(_UNIT_Z, rz)
+                )
+                attrs += (
+                    f' pos="{_fmt([tx, ty, tz])}" '
+                    f'quat="{_fmt(_rotmat_to_quat_wxyz(R))}"'
+                )
+            lines.append(f"{indent}<geom {attrs} {style}/>")
 
     def _emit_joint(d: _MjJoint, indent: str):
         joint_names.append(d.name)
@@ -472,6 +538,7 @@ def export_mjcf(
             body_order.append(body_name)
             _emit_payload(body_name, indent + "  ")
             _emit_geoms(body_name, indent + "  ")
+            _emit_mesh_geoms(body_name, indent + "  ")
             for child in children.get(body_name, []):
                 write_body(child, indent + "  ")
             lines.append(f"{indent}</body>")
@@ -510,6 +577,7 @@ def export_mjcf(
         body_order.append(body_name)
         _emit_payload(body_name, cur + "  ")
         _emit_geoms(body_name, cur + "  ")
+        _emit_mesh_geoms(body_name, cur + "  ")
         for child in children.get(body_name, []):
             write_body(child, cur + "  ")
         lines.append(f"{cur}</body>")

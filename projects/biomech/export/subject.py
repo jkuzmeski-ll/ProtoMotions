@@ -98,15 +98,28 @@ class FittedSubject:
 
         return parse_osim(self.osim_path)
 
-    def to_mjcf(self, spec=None):
-        """Export the fitted skeleton to MJCF (uses stored ``mjcf_xml`` if present)."""
-        if self.mjcf_xml is not None and spec is None:
+    def to_mjcf(self, spec=None, bone_meshes: bool = False):
+        """Export the fitted skeleton to MJCF (uses stored ``mjcf_xml`` if present).
+
+        ``bone_meshes=True`` renders each body with its OpenSim bone mesh(es); the
+        converted STL meshes must exist (see ``tools/convert_bone_meshes.py``).
+        """
+        if self.mjcf_xml is not None and spec is None and not bone_meshes:
             return self.mjcf_xml
         from biomech.export.mjcf import export_mjcf
 
+        mesh_map = None
+        if bone_meshes:
+            from biomech.export.bone_geometry import default_bone_geometry
+
+            mesh_map = default_bone_geometry()
+
         spec = spec or self.spec()
         return export_mjcf(
-            spec, group_scales=self.group_scales, coupled_knee=self.coupled_knee
+            spec,
+            group_scales=self.group_scales,
+            coupled_knee=self.coupled_knee,
+            bone_meshes=mesh_map,
         ).xml
 
     def to_motion(self, spec=None, device: str = "cpu"):

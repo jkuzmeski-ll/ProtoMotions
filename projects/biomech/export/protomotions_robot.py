@@ -80,16 +80,39 @@ def write_biomech_asset(
     repo_root: Optional[str | Path] = None,
     visual_geoms: bool = True,
     subject_mass: Optional[float] = None,
+    bone_meshes: bool = False,
 ) -> Path:
     """Export the fitted skeleton MJCF into the ProtoMotions asset tree.
 
     Returns the absolute path written. ``asset_file_name`` is the path relative to
     ``asset_root`` used by :class:`RobotAssetConfig`. ``visual_geoms`` (default True) adds
     non-colliding capsule/sphere bones so the robot is visible in the renderer.
+    ``bone_meshes`` (default False), if True, renders each body with its actual OpenSim
+    bone mesh(es) instead of capsule placeholders (requires the converted STL meshes under
+    ``<asset_root>/mesh/biomech_rajagopal/`` -- see ``tools/convert_bone_meshes.py``).
     ``subject_mass`` (kg), if given, rescales body masses/inertias so the robot's whole-body
     mass matches the subject (anthropometric mass on top of ``group_scales`` geometry).
     """
     from biomech.export.mjcf import export_mjcf
+
+    mesh_map = None
+    if bone_meshes:
+        from biomech.export.bone_geometry import (
+            bone_mesh_dir,
+            bone_meshes_available,
+            default_bone_geometry,
+        )
+
+        root = Path(repo_root) if repo_root is not None else Path.cwd()
+        resolved_asset_root = root / asset_root
+        if bone_meshes_available(resolved_asset_root):
+            mesh_map = default_bone_geometry()
+        else:
+            print(
+                "NOTE: bone_meshes requested but converted STL meshes were not found at "
+                f"{bone_mesh_dir(resolved_asset_root)}; falling back to capsule bones. "
+                "Run: python projects/biomech/tools/convert_bone_meshes.py"
+            )
 
     res = export_mjcf(
         spec,
@@ -97,6 +120,7 @@ def write_biomech_asset(
         coupled_knee=coupled_knee,
         visual_geoms=visual_geoms,
         subject_mass=subject_mass,
+        bone_meshes=mesh_map,
     )
     root = Path(repo_root) if repo_root is not None else Path.cwd()
     out = root / asset_root / asset_file_name
