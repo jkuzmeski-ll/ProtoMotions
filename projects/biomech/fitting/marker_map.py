@@ -49,9 +49,14 @@ S001_TO_RAJAGOPAL: Dict[str, str] = {
     "LTB1": "LTIB", "LTB2": "LTIB2", "LTB3": "LTIB3",
     # ankle (lateral/medial malleolus)
     "RLMAL": "RANK", "RMMAL": "RMANK", "LLMAL": "LANK", "LMMAL": "LMANK",
-    # foot
-    "RCAL": "RHEE", "RTOE": "RTOE", "RMT5": "RMTH5",
-    "LCAL": "LHEE", "LTOE": "LTOE", "LMT5": "LMTH5",
+    # foot — calcaneus cluster (HEE/HEE2/HEE3), met heads (MTH1/MTH5), met-2 head (TOE)
+    "RCAL": "RHEE", "RCAL2": "RHEE2", "RCAL3": "RHEE3",
+    "RMT1": "RMTH1", "RMT5": "RMTH5", "RTOE": "RTOE",
+    "LCAL": "LHEE", "LCAL2": "LHEE2", "LCAL3": "LHEE3",
+    "LMT1": "LMTH1", "LMT5": "LMTH5", "LTOE": "LTOE",
+    # hallux — the only marker distal to the MTP joint (on the toes segment); makes
+    # mtp_angle observable. These model markers are added by fitting.marker_placement.
+    "RTOE_TIP": "RHLX", "LTOE_TIP": "LHLX",
     # torso / shoulders
     "C7": "C7", "CLAV": "CLAV", "RACR": "RSHO", "LACR": "LSHO",
     # arms (approximate; upper-body is secondary to the lower-body focus)
@@ -76,7 +81,8 @@ S001_ANATOMICAL: Set[str] = {
     "RASI", "LASI", "RPSI", "LPSI",
     "RLFC", "RMFC", "LLFC", "LMFC",
     "RLMAL", "RMMAL", "LLMAL", "LMMAL",
-    "RCAL", "RTOE", "RMT5", "LCAL", "LTOE", "LMT5",
+    "RCAL", "RCAL2", "RCAL3", "RMT1", "RTOE", "RMT5", "RTOE_TIP",
+    "LCAL", "LCAL2", "LCAL3", "LMT1", "LTOE", "LMT5", "LTOE_TIP",
     "C7", "CLAV", "RACR", "LACR", "RLEL", "LLEL",
 }
 
@@ -88,7 +94,8 @@ LOWER_BODY_MARKERS: Set[str] = {
     "R_tibial_plateau", "L_tibial_plateau",
     "RTB1", "RTB2", "RTB3", "LTB1", "LTB2", "LTB3",
     "RLMAL", "RMMAL", "LLMAL", "LMMAL", "RAJC", "LAJC",
-    "RCAL", "RTOE", "RMT5", "LCAL", "LTOE", "LMT5",
+    "RCAL", "RCAL2", "RCAL3", "RMT1", "RTOE", "RMT5", "RTOE_TIP",
+    "LCAL", "LCAL2", "LCAL3", "LMT1", "LTOE", "LMT5", "LTOE_TIP",
 }
 
 
