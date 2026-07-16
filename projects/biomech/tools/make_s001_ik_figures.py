@@ -55,7 +55,8 @@ from biomech.fitting.marker_map import (  # noqa: E402
 from biomech.osim import parse_osim  # noqa: E402
 from biomech.session import load_session  # noqa: E402
 from biomech.skeleton.skeleton import WarpSkeleton  # noqa: E402
-from biomech.tests import SPEEDCHANGE, TRIAL_C3D  # noqa: E402
+from biomech.fitting.marker_placement import place_foot_markers  # noqa: E402
+from biomech.tests import CAL_C3D, SPEEDCHANGE, TRIAL_C3D  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs" / "figures"
@@ -84,10 +85,22 @@ def reconstruct():
     measured per-foot GRF on the window, the motion clip, spec, and time axis.
     """
     session = load_session(str(TRIAL_C3D), speedchange_path=str(SPEEDCHANGE))
+    static = load_session(str(CAL_C3D), filter_cutoff_hz=None)
     spec = parse_osim(str(ROOT / "models" / "rajagopal_data" / "Rajagopal2015.osim"))
+    mm = s001_marker_map()
+    # enrich the sparse stock foot marker set from the static trial (adds the
+    # calcaneus cluster / met-1 / hallux markers, re-seats TOE, unlocks the MTP, and
+    # re-zeros the ankle at the standing neutral) before building the skeleton.
+    pl = place_foot_markers(
+        spec, static, mapping=mm,
+        marker_config=MarkerFitConfig(outer_iters=6), device=DEVICE,
+        frame_range=(0, min(60, int(np.asarray(static.markers).shape[0]))),
+    )
+    print(f"  enriched foot markers: +{pl.added}  reseated={pl.reseated}  "
+          f"unlocked={pl.unlocked}  ankle_neutral(deg)="
+          f"{ {k: round(v * DEG, 2) for k, v in pl.ankle_neutral.items()} }")
     skel = WarpSkeleton(spec, device=DEVICE)
     model_names = skel.marker_names()
-    mm = s001_marker_map()
     obs_all, present = observations_from_session(session, model_names, mm)
 
     # contiguous, best-visibility walk window
@@ -143,6 +156,7 @@ def reconstruct():
         per_marker_rms=per_marker_rms, marker_names=model_names,
         rigid_body_pos=rbp, body_names=body_names,
         grf=grf, t=t, window=(lo, hi), fps=session.point_rate,
+        ankle_neutral=pl.ankle_neutral,
     )
 
 
@@ -151,7 +165,12 @@ def load_or_reconstruct(fresh: bool = False):
     if CACHE.exists() and not fresh:
         print(f"Loading cached reconstruction from {CACHE.name}")
         z = np.load(CACHE, allow_pickle=True)
-        spec = parse_osim(str(ROOT / "models" / "rajagopal_data" / "Rajagopal2015.osim"))
+        if "spec_pickle" in z:
+            spec = z["spec_pickle"].item()
+        else:
+            spec = parse_osim(
+                str(ROOT / "models" / "rajagopal_data" / "Rajagopal2015.osim")
+            )
         grf = {}
         if "grf_R" in z:
             grf["R"] = z["grf_R"]
@@ -170,6 +189,8 @@ def load_or_reconstruct(fresh: bool = False):
         per_marker_rms=R["per_marker_rms"], marker_names=np.array(R["marker_names"]),
         rigid_body_pos=R["rigid_body_pos"], body_names=np.array(R["body_names"]),
         t=R["t"], window=np.array(R["window"]), fps=R["fps"],
+        spec_pickle=np.array(R["spec"], dtype=object),
+        ankle_neutral=np.array(R["ankle_neutral"], dtype=object),
     )
     for side in R["grf"]:
         save[f"grf_{side}"] = R["grf"][side]

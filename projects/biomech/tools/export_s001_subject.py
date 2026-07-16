@@ -81,8 +81,16 @@ def main() -> int:
         print("Run: .venv/Scripts/python.exe projects/biomech/tools/make_s001_ik_figures.py --fresh")
         return 1
 
-    spec = parse_osim(str(_OSIM))
     cache = np.load(_CACHE, allow_pickle=True)
+    # Use the *enriched* spec that produced the cached poses (unlocked MTP + baked
+    # ankle-neutral + added foot markers). Falling back to the stock model would weld
+    # the MTP and drop the ankle-neutral bake, desyncing the asset from the poses.
+    if "spec_pickle" in cache:
+        spec = cache["spec_pickle"].item()
+    else:
+        print("NOTE: cache has no enriched spec; parsing stock model "
+              "(regenerate the cache with make_s001_ik_figures.py --fresh).")
+        spec = parse_osim(str(_OSIM))
     poses = np.asarray(cache["poses"], dtype=np.float64)  # (F, 37) DART q
     scales = np.asarray(cache["scales"], dtype=np.float64)  # (60,) group scales
     fps = float(cache["fps"])
