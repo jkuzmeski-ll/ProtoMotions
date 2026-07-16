@@ -112,6 +112,50 @@ def test_placement_roundtrip_reproduces_static_markers():
         assert np.nanmean(err) < 0.025, (model_name, float(np.nanmean(err)))
 
 
+def test_ankle_neutral_preserves_world_geometry():
+    """Re-zeroing the ankle at a static neutral must not move any body in the world."""
+    _require_torch()
+    from biomech.fitting.marker_placement import register_ankle_neutral
+    from biomech.osim import parse_osim
+    from biomech.skeleton.skeleton import WarpSkeleton
+
+    spec = parse_osim(str(_OSIM))
+    dof = spec.dof_index_map()
+    ndof = spec.num_dofs
+
+    rng = np.random.default_rng(0)
+    q = rng.uniform(-0.25, 0.25, size=(3, ndof))
+
+    skel0 = WarpSkeleton(spec, device="cpu")
+    world0, markers0 = skel0.forward(q)
+
+    # pretend the static trial sat at a constant ankle plantarflexion offset
+    static = np.zeros((10, ndof), dtype=np.float64)
+    static[:, dof["ankle_angle_r"]] = -0.18
+    static[:, dof["ankle_angle_l"]] = -0.20
+    offsets = register_ankle_neutral(spec, static)
+    assert set(offsets) == {"ankle_angle_r", "ankle_angle_l"}
+
+    # apply q' = q - off on the ankle dofs; every body pose must be unchanged
+    q2 = q.copy()
+    q2[:, dof["ankle_angle_r"]] -= offsets["ankle_angle_r"]
+    q2[:, dof["ankle_angle_l"]] -= offsets["ankle_angle_l"]
+    skel1 = WarpSkeleton(spec, device="cpu")
+    world1, markers1 = skel1.forward(q2)
+
+    assert np.allclose(world0, world1, atol=1e-9), np.abs(world0 - world1).max()
+    assert np.allclose(markers0, markers1, atol=1e-9)
+
+
+def test_placement_registers_ankle_neutral():
+    """The full placement re-zeros the ankle by the subject's static plantarflexion."""
+    _spec, _static, placement = _place()
+    assert set(placement.ankle_neutral) == {"ankle_angle_r", "ankle_angle_l"}
+    # S001 static plantarflexion is ~ -10 deg (PiG RStaticPlantFlex ~ 9-10 deg).
+    for coord, off in placement.ankle_neutral.items():
+        assert -0.30 < off < -0.05, (coord, off)
+
+
 def test_mtp_becomes_observable():
     """A toes-segment marker moves with mtp_angle; calcn markers do not."""
     spec, _static, _placement = _place()

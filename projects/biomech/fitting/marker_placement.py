@@ -83,6 +83,7 @@ class MarkerPlacement:
     group_scales: np.ndarray         # scales used for placement (from the static fit)
     poses: np.ndarray                # (Fw, ndof) fitted static poses used for placement
     window: Tuple[int, int]          # frame window used for the static fit
+    ankle_neutral: Dict[str, float] = None  # coord -> baked static offset (radians)
 
 
 def unlock_mtp(spec: SkeletonSpec, sides: Sequence[str] = ("r", "l")) -> List[str]:
@@ -104,6 +105,62 @@ def unlock_mtp(spec: SkeletonSpec, sides: Sequence[str] = ("r", "l")) -> List[st
                 coord.locked = False
                 unlocked.append(coord.name)
     return unlocked
+
+
+def _rot_z4(angle: float) -> np.ndarray:
+    c, s = np.cos(angle), np.sin(angle)
+    T = np.eye(4, dtype=np.float64)
+    T[0, 0] = c
+    T[0, 1] = -s
+    T[1, 0] = s
+    T[1, 1] = c
+    return T
+
+
+def register_ankle_neutral(
+    spec: SkeletonSpec,
+    static_poses: np.ndarray,
+    coords: Sequence[str] = ("ankle_angle_r", "ankle_angle_l"),
+) -> Dict[str, float]:
+    """Re-zero pin-joint coordinates at the static (standing) neutral pose.
+
+    The stock Rajagopal ankle neutral does not coincide with a given subject's flat-foot
+    standing pose, so a fitted static trial reads a nonzero "plantarflexion" (~ -10 deg for
+    S001, matching Plug-in-Gait's ``RStaticPlantFlex``). That constant offset then
+    contaminates the whole dynamic ankle-angle trace. This is the OpenSim/PiG static-offset
+    correction: measure the mean coordinate value over the static trial and re-zero it.
+
+    The re-zero is done *physically* by baking ``Rz(-off)`` into the joint's child frame,
+    so with ``q' = q - off`` every body's world pose is provably unchanged (the contact /
+    export pipeline is untouched) while the coordinate now reads 0 at standing. Only
+    single-axis pin joints (revolute about Z, e.g. the ankle) are supported.
+
+    Returns ``{coordinate_name: offset_radians}`` for the coordinates re-zeroed.
+    """
+    static_poses = np.asarray(static_poses, dtype=np.float64)
+    dof = spec.dof_index_map()
+    offsets: Dict[str, float] = {}
+    for coord in coords:
+        if coord not in dof:
+            continue
+        joint = next((j for j in spec.joints if coord in j.dof_names), None)
+        if joint is None:
+            continue
+        if joint.joint_class != "PinJoint":
+            raise NotImplementedError(
+                f"neutral registration only supports PinJoint coords, got "
+                f"{joint.joint_class} for {coord!r}"
+            )
+        off = float(np.nanmean(static_poses[:, dof[coord]]))
+        # bake Rz(-off) into the child frame: T_child' = T_child @ Rz(-off)
+        joint.T_child = joint.T_child @ _rot_z4(-off)
+        # shift the coordinate limits so the same physical range stays reachable
+        c = joint.coordinates[0]
+        c.range_lo -= off
+        c.range_hi -= off
+        c.default_value -= off
+        offsets[coord] = off
+    return offsets
 
 
 def _body_group_map(spec: SkeletonSpec) -> Dict[str, int]:
@@ -142,6 +199,7 @@ def place_foot_markers(
     sides: Sequence[str] = ("R", "L"),
     reseat: bool = True,
     unlock_mtp_joint: bool = True,
+    register_neutral: bool = True,
 ) -> MarkerPlacement:
     """Add the rich foot markers to ``spec`` (in place) via static marker placement.
 
@@ -237,6 +295,14 @@ def place_foot_markers(
     if unlock_mtp_joint:
         unlocked = unlock_mtp(spec, sides=tuple(s.lower() for s in sides))
 
+    # 6) Re-zero the ankle at the static (standing) neutral (PiG static-offset correction).
+    ankle_neutral: Dict[str, float] = {}
+    if register_neutral:
+        coords = tuple(
+            f"ankle_angle_{s.lower()}" for s in sides
+        )
+        ankle_neutral = register_ankle_neutral(spec, poses, coords=coords)
+
     return MarkerPlacement(
         added=added,
         reseated=reseated,
@@ -246,4 +312,5 @@ def place_foot_markers(
         group_scales=group_scales,
         poses=poses,
         window=(lo, hi),
+        ankle_neutral=ankle_neutral,
     )
