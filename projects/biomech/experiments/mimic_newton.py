@@ -43,6 +43,7 @@ tuned against measured GRF.
 """
 
 import argparse
+import os
 import sys
 
 from protomotions.agents.ppo.config import PPOAgentConfig
@@ -69,13 +70,20 @@ _DEFAULT_FOOT_COLLISION = "boxes"
 
 
 def _foot_collision_choice() -> str:
-    """Read the ``--foot-collision {none,spheres,boxes}`` selection from the CLI.
+    """Select the foot-collision variant: ``{none, spheres, boxes}``.
 
-    ``train_agent.py`` parses with ``parse_known_args``, so this experiment-specific flag
-    lands in the leftover args instead of the shared ``argparse.Namespace``; parse it out
-    of ``sys.argv`` directly. Accepts ``--foot-collision X`` and ``--foot-collision=X``.
+    ``train_agent.py`` parses argv with strict ``parse_args``, so it *rejects* an
+    experiment-specific ``--foot-collision`` flag before this experiment ever runs. Select
+    the variant with the ``BIOMECH_FOOT_COLLISION`` environment variable instead, e.g.::
+
+        set BIOMECH_FOOT_COLLISION=spheres   (Windows)
+        export BIOMECH_FOOT_COLLISION=spheres (POSIX)
+
+    For forward-compat (if a future train_agent uses ``parse_known_args``) a
+    ``--foot-collision X`` / ``--foot-collision=X`` in ``sys.argv`` is honored too. Falls
+    back to ``_DEFAULT_FOOT_COLLISION``.
     """
-    choice = _DEFAULT_FOOT_COLLISION
+    choice = os.environ.get("BIOMECH_FOOT_COLLISION", _DEFAULT_FOOT_COLLISION)
     argv = sys.argv
     for i, a in enumerate(argv):
         if a == "--foot-collision" and i + 1 < len(argv):
@@ -84,7 +92,7 @@ def _foot_collision_choice() -> str:
             choice = a.split("=", 1)[1]
     if choice not in _FOOT_COLLISION_ASSETS:
         raise ValueError(
-            f"--foot-collision must be one of {sorted(_FOOT_COLLISION_ASSETS)}, got {choice!r}"
+            f"foot-collision must be one of {sorted(_FOOT_COLLISION_ASSETS)}, got {choice!r}"
         )
     return choice
 
@@ -106,6 +114,7 @@ def env_config(robot_cfg: RobotConfig, args: argparse.Namespace) -> EnvConfig:
     from protomotions.envs.action import make_pd_action_config
     from protomotions.envs.component_factories import (
         action_smoothness_factory,
+        contact_match_rew_factory,
         max_coords_obs_factory,
         mimic_target_poses_max_coords_factory,
         mimic_tracking_rewards_factory,
@@ -143,11 +152,11 @@ def env_config(robot_cfg: RobotConfig, args: argparse.Namespace) -> EnvConfig:
             rh_coef=-100.0,
         ),
         "pow_rew": pow_rew_factory(weight=-1e-5, min_value=-0.5),
-        # NOTE: contact_match_rew is disabled because the exported .motion does not
-        # carry per-body reference contact labels (rigid_body_contacts). Re-enable it
-        # once the motion is regenerated with GRF-derived contact detection; without
-        # ref contacts the reward crashes (ref_contacts is None). The sim-side
-        # foot-ground collision (boxes vs the floor) is unaffected by this.
+        # Reference contact labels come from the GRF-derived per-body foot contacts baked
+        # into the .motion by tools/export_s001_subject.py (foot_contacts_from_clip).
+        "contact_match_rew": contact_match_rew_factory(
+            weight=-0.1, zero_during_grace_period=True
+        ),
     }
 
     return EnvConfig(
