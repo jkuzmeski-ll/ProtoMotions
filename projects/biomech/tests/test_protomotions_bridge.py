@@ -251,11 +251,12 @@ def test_mimic_newton_experiment_builds_configs():
 
 
 def test_foot_collision_switch_selects_asset():
-    """``--foot-collision`` picks the matching MJCF variant (default boxes)."""
+    """Foot-collision variant is picked from env var / argv (default boxes)."""
     _require_mujoco()
     _require_protomotions()
     import argparse
     import importlib.util
+    import os
     import sys
 
     from protomotions.robot_configs.factory import robot_config
@@ -271,7 +272,9 @@ def test_foot_collision_switch_selects_asset():
 
     args = argparse.Namespace(motion_file=None, batch_size=1024, training_max_steps=1000)
     saved_argv = sys.argv
+    saved_env = os.environ.pop("BIOMECH_FOOT_COLLISION", None)
     try:
+        # --- argv-based selection (env var cleared) ---
         # explicit selection
         sys.argv = ["train_agent.py", "--foot-collision", "spheres"]
         cfg = robot_config("biomech")
@@ -284,10 +287,89 @@ def test_foot_collision_switch_selects_asset():
         exp.configure_robot_and_simulator(cfg, None, args)
         assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal.xml"
 
-        # default when the flag is absent
+        # default when neither env var nor flag is present
         sys.argv = ["train_agent.py"]
         cfg = robot_config("biomech")
         exp.configure_robot_and_simulator(cfg, None, args)
         assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal_boxes.xml"
+
+        # --- env-var-based selection (the supported training path) ---
+        os.environ["BIOMECH_FOOT_COLLISION"] = "spheres"
+        cfg = robot_config("biomech")
+        exp.configure_robot_and_simulator(cfg, None, args)
+        assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal_spheres.xml"
+
+        # argv still overrides the env var (forward-compat)
+        sys.argv = ["train_agent.py", "--foot-collision=none"]
+        cfg = robot_config("biomech")
+        exp.configure_robot_and_simulator(cfg, None, args)
+        assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal.xml"
     finally:
         sys.argv = saved_argv
+        if saved_env is None:
+            os.environ.pop("BIOMECH_FOOT_COLLISION", None)
+        else:
+            os.environ["BIOMECH_FOOT_COLLISION"] = saved_env
+
+
+def test_foot_contacts_from_clip_gated_by_grf():
+    """``foot_contacts_from_clip`` labels ``[F, nbody]`` bool: contact only on loaded
+    frames, bodies without a collider (talus) never contact."""
+    _require_mujoco()
+    _require_protomotions()
+    from biomech.export.foot_collision import CollisionGeom
+    from biomech.export.mjcf import export_mjcf
+    from biomech.export.protomotions_robot import (
+        build_simbody_motion,
+        foot_contacts_from_clip,
+    )
+
+    spec = _spec()
+    n = 6
+    Q = _feasible(spec, np.random.default_rng(1), n)
+    xml = export_mjcf(spec, coupled_knee="coupled").xml
+    clip = build_simbody_motion(spec, Q, fps=100.0, mjcf_xml=xml)
+
+    # A colliding box on each real foot body; talus is intentionally left bare.
+    geoms = [
+        CollisionGeom(body="calcn_r", kind="box", pos=np.zeros(3),
+                      size=np.array([0.05, 0.02, 0.03]), name="calcn_r_box"),
+        CollisionGeom(body="toes_r", kind="box", pos=np.zeros(3),
+                      size=np.array([0.03, 0.02, 0.03]), name="toes_r_box"),
+        CollisionGeom(body="calcn_l", kind="box", pos=np.zeros(3),
+                      size=np.array([0.05, 0.02, 0.03]), name="calcn_l_box"),
+        CollisionGeom(body="toes_l", kind="box", pos=np.zeros(3),
+                      size=np.array([0.03, 0.02, 0.03]), name="toes_l_box"),
+    ]
+    xml_c = export_mjcf(spec, coupled_knee="coupled", collision_geoms=geoms).xml
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "m.xml"
+        p.write_text(xml_c)
+
+        # Right foot loaded on the back half; left foot never loaded.
+        fz_r = np.zeros(n)
+        fz_r[n // 2:] = 600.0
+        grf = {
+            "R": np.stack([np.zeros(n), np.zeros(n), fz_r], axis=1),
+            "L": np.zeros((n, 3)),
+        }
+        # Disable the height gate so the test isolates the GRF gating logic.
+        contacts = foot_contacts_from_clip(clip, str(p), grf, height_thresh=1e9)
+
+    import torch
+
+    assert contacts.dtype == torch.bool
+    assert tuple(contacts.shape) == (n, len(clip.body_names))
+    idx = {name: i for i, name in enumerate(clip.body_names)}
+    c = contacts.numpy()
+    loaded_r = fz_r > 0
+    # Right foot bodies flagged exactly on loaded frames (height gate off).
+    assert np.array_equal(c[:, idx["calcn_r"]], loaded_r)
+    assert np.array_equal(c[:, idx["toes_r"]], loaded_r)
+    # Left foot never loaded -> never flagged.
+    assert not c[:, idx["calcn_l"]].any()
+    assert not c[:, idx["toes_l"]].any()
+    # Talus has no collider -> never contacts (matches the sim foot sensors).
+    assert not c[:, idx["talus_r"]].any()
+    assert not c[:, idx["talus_l"]].any()
