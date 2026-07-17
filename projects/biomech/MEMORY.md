@@ -538,13 +538,24 @@ biomech/
   1.24->0.03, approx_kl ~1e-4, episode length rising. Two blockers found + fixed:
   * **`--foot-collision` is NOT CLI-passable:** `train_agent.py` uses strict `parse_args`
     (NOT `parse_known_args` as an earlier note claimed), so an unknown `--foot-collision`
-    flag errors out. The experiment still reads it from `sys.argv` (default `boxes`), so
-    just omit the flag on the CLI; to change scheme, edit `_DEFAULT_FOOT_COLLISION`.
-  * **contact_match reward crashed** (`ref_contacts is None`): the exported `.motion` has no
-    per-body `rigid_body_contacts`. Disabled `contact_match_rew` in `mimic_newton.py` for
-    now. **Follow-up:** regenerate the `.motion` with GRF-derived contact detection (cache
-    has `grf_R/grf_L`) and re-enable it. MotionLib warns + sets `contacts=None` when a clip
-    lacks/zeros contacts.
+    flag errors out. **RESOLVED:** `_foot_collision_choice()` now reads the
+    **`BIOMECH_FOOT_COLLISION`** env var first (then still honors `--foot-collision[=]X` in
+    `sys.argv` for forward-compat, then `_DEFAULT_FOOT_COLLISION="boxes"`). Select a scheme
+    with e.g. `BIOMECH_FOOT_COLLISION=spheres <train cmd>` (env prefix, not a shell subst);
+    do NOT pass `--foot-collision` on the CLI. Covered by
+    `test_foot_collision_switch_selects_asset` (argv + env-var paths).
+  * **contact_match reward crashed** (`ref_contacts is None`): the exported `.motion` had no
+    per-body `rigid_body_contacts`. **RESOLVED:** contacts are now baked into the `.motion`
+    by `tools/export_s001_subject.py` via
+    `export/protomotions_robot.py::foot_contacts_from_clip(clip, boxes_mjcf, {R,L GRF})` --
+    per-body (calcn/toes x R/L) heel/toe timing = lowest colliding-geom world-z < 2 cm AND
+    that foot's measured GRF vertical > max(50 N, 0.25*peak). talus has no collider -> always
+    False (matches the sim foot sensors). Physiologically correct windows (heel leads toe by
+    ~2 frames; double-support overlaps). `contact_match_rew` re-enabled in `mimic_newton.py`
+    (weight -0.1, `zero_during_grace_period=True`); smoke runs show raw ~0.92-1.0 / scaled
+    ~-0.10, no NaN. New test `test_foot_contacts_from_clip_gated_by_grf` (GRF gating + talus
+    all-False). MotionLib smooths the labels ("Contacts are now float values in [0,1]",
+    `ref_contact_smooth_window=7`).
   * **action_smoothness overflowed to `inf`** (poisoned total reward; `reward_norm/var`
     ~1.8e17): the 8 dependent walker-knee DOFs were emitted range-less in the MJCF ->
     `extract_kinematic_info` filled +-1e10 -> `make_pd_action_config` PD action scale ~1e10
@@ -555,7 +566,7 @@ biomech/
     NaN/Inf and `reward_norm/var` ~20. NOTE: clamping only `kinematic_info` fails
     `simulator._verify_joint_limits` (sim reads MJCF ranges) -- the fix MUST be in the MJCF.
   * **Remaining before a real run:** PD gains are still the uniform 10 Hz/zeta=2 starting
-    point (tune vs GRF); longer train-to-convergence GPU run; regenerate motion w/ contacts.
+    point (tune vs GRF); longer train-to-convergence GPU run.
 
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
