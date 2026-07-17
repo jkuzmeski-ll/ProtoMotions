@@ -415,16 +415,32 @@ biomech/
   `toes` body at the MTP so push-off contact follows MTP flexion. Geoms are `density=0`
   (bodies keep explicit `<inertial>`, so FK/dynamics unchanged) with `contype/conaffinity=1`
   to hit the terrain floor. Verified with `tools/check_foot_collision.py`: during measured
-  right stance the collision surface reaches the floor (spheres calcn ~-0.2 mm / toes
-  ~+3.5 mm; boxes calcn ~-2.5 mm / toes ~-3.6 mm) and clears ~9-11 cm in swing -- vs the
-  original 3-7 cm float. **RENDER CHECK DONE** (`tools/render_foot_collision.py` ->
-  `docs/figures/foot_collision_check.png`): drives the sole-registered `.motion` and, per
-  scheme, overlays the green foot geoms on the right-foot bone mesh in the foot sagittal
-  plane at three auto-picked frames (heel contact = argmin of the *calcaneus* geoms' lowest
-  world-z; deepest push-off contact = argmin of all foot geoms' lowest z; swing = argmax).
-  Confirms the **calcaneus geom does reach the floor** (heel −10 mm spheres / −16 mm boxes),
-  answering the old "calcaneus never hits the ground" impression (that came from a bone-only
-  datum; against the collision geoms + registered clip the heel clearly contacts).
+  right stance the collision surface reaches the floor and clears ~9-11 cm in swing.
+  **TOE COPLANARITY FIX (commit `4c2c9ad`):** the forefoot/toe geoms used to rest on the
+  shallower *local* toe-region plantar minimum, so the toe box/spheres floated ~20 mm above
+  the heel geoms' bottom plane. `foot_collision.py` now snaps every toe geom's plantar face
+  to the whole-sole deepest plane (`y_floor`, mapped calcn->toes; toes->calcn is a pure
+  translation, R=I), so at a flat foot all geoms are coplanar at calcn-frame y=-0.0225.
+  Assets regenerated. Post-fix `check_foot_collision.py`: spheres calcn stance -0.2/overall
+  -10.1, toes stance -15.1/overall -37.1; boxes calcn -2.5/-16.0, toes -22.2/-45.4 (toe now
+  participates in the forefoot-loaded contact -> more stance penetration, see heel finding).
+  **RENDER CHECK DONE** (`tools/render_foot_collision.py` ->
+  `docs/figures/foot_collision_check.png`, 2 schemes x 4 gait events): drives the
+  sole-registered `.motion`, overlays the green foot geoms on the right-foot bone mesh in the
+  foot sagittal plane at **heel strike / midstance / toe off / mid swing**. Events are
+  detected scheme-independently from the plantar-sole kinematics (posterior-heel vs distal-toe
+  world-z contrast within the primary stance block), so both assets render the SAME frames.
+  **KEY FINDING (corrects an earlier wrong claim): the posterior calcaneus NEVER reaches the
+  floor.** Over the whole clip the posterior-heel point bottoms at **+38.6 mm** (min at frame
+  22) while the forefoot reaches -16.9 mm -- the retargeted right foot is **forefoot-loaded
+  with no heel strike** (even at the most-dorsiflexed early-stance frame the heel is ~+44 mm
+  up). My prior "calcaneus geom reaches the floor (heel -10/-16 mm)" note was WRONG: that
+  metric was the argmin over ALL calcn geoms, which is the *ball* spheres, not the posterior
+  heel. This is a real motion/ankle-pitch issue (a pure z-shift registration can't fix foot
+  pitch), and matches the user's long-standing "calcaneus never hits the ground / never
+  dorsiflexes" concern. **TODO: investigate the right-ankle pitch / heel-strike** (compare
+  the sole-registered `.motion` ankle angle vs the bone-check `+8 deg dorsiflexion` datum;
+  the two disagree -> likely an ankle-neutral-bake / registration-datum mismatch).
   **SIM WIRING DONE** (commit `50f425f`): `--foot-collision {none,spheres,boxes}` (default
   `boxes`) in `experiments/mimic_newton.py::configure_robot_and_simulator` swaps
   `robot_cfg.asset.asset_file_name` to the matching MJCF (parsed from `sys.argv` because
