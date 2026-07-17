@@ -41,6 +41,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from biomech.contact.pipeline import (  # noqa: E402
+    detect_right_plate_x_sign,
     measured_belt_grf,
     pick_visible_window,
     reconstruct_window,
@@ -155,7 +156,13 @@ def reconstruct():
     ])
 
     motion = build_motion(spec, poses, fps=session.point_rate, group_scales=scales)
-    belt = measured_belt_grf(session)
+    # Auto-detect which force plate is the right foot (S001's right foot is on the -x
+    # plate; the default sign=+1 would swap R/L GRF). Robust to lab/capture convention.
+    sign = detect_right_plate_x_sign(
+        session, static, spec, motion, (lo, hi), group_scales=scales
+    )
+    print(f"  belt->foot: right_plate_x_sign={sign:+d}")
+    belt = measured_belt_grf(session, sign)
     grf = {side: belt[side][0][lo:hi] for side in belt}
     t = np.arange(F) / session.point_rate
     rbp = np.asarray(motion.data["rigid_body_pos"])  # (F, B, 3) Z-up

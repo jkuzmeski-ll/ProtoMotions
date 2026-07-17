@@ -122,3 +122,40 @@ def test_pipeline_real_s001():
         meas_mean = float(np.mean(foot.measured_grf[foot.stance_mask, 2]))
         assert meas_mean > 50.0
         assert c.vertical_rms < 0.1 * meas_mean  # < 10% of mean vertical load
+
+
+def test_detect_right_plate_x_sign_walk():
+    """On the S001 walk window the detector picks -1 (right foot on the -x plate).
+
+    Uses the committed IK cache (real gait poses) so this is fast and does not re-run
+    reconstruction; auto-detection needs actual swing/stance contrast, which a gait
+    window provides (a quiet-standing window is genuinely ambiguous).
+    """
+    _require_torch()
+    cache = _ROOT / "docs" / "figures" / "_s001_ik_cache.npz"
+    if not cache.exists():
+        raise SkipTest(f"IK cache missing: {cache} (run tools/make_s001_ik_figures.py)")
+    require(TRIAL_C3D)
+    require(CAL_C3D)
+
+    from biomech.contact.pipeline import detect_right_plate_x_sign, measured_belt_grf
+    from biomech.export.motion import build_motion
+    from biomech.session import load_session
+
+    z = np.load(str(cache), allow_pickle=True)
+    spec = z["spec_pickle"].item()
+    scales = np.asarray(z["scales"], dtype=float)
+    lo, hi = (int(v) for v in z["window"])
+    trial = load_session(str(TRIAL_C3D))
+    static = load_session(str(CAL_C3D), filter_cutoff_hz=None)
+    motion = build_motion(spec, np.asarray(z["poses"], dtype=float),
+                          fps=trial.point_rate, group_scales=scales)
+
+    sign = detect_right_plate_x_sign(
+        trial, static, spec, motion, (lo, hi), group_scales=scales
+    )
+    assert sign == -1
+    # the correct sign truly swaps R/L vs the +1 lab default on this capture
+    b_auto = measured_belt_grf(trial, sign)
+    b_default = measured_belt_grf(trial, 1)
+    assert np.allclose(b_auto["R"][0], b_default["L"][0])

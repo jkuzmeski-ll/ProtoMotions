@@ -71,6 +71,7 @@ class SubjectPipelineResult:
     marker_rms: np.ndarray
     motion: object  # MotionExportResult
     feet: Dict[str, FootContactFit] = field(default_factory=dict)
+    right_plate_x_sign: Optional[int] = None  # belt->foot assignment used (auto or forced)
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +187,54 @@ def measured_belt_grf(
     return out
 
 
+def detect_right_plate_x_sign(
+    trial_session,
+    static_session,
+    spec,
+    motion,
+    window: Tuple[int, int],
+    group_scales: Optional[np.ndarray] = None,
+    fz_threshold: float = 50.0,
+    sides: Tuple[Tuple[str, str], ...] = (("R", "calcn_r"), ("L", "calcn_l")),
+) -> int:
+    """Auto-detect which force-plate ``x_sign`` is the right foot from the kinematics.
+
+    The default lab convention (``right_plate_x_sign=1``, +x plate = right foot) is flipped
+    for some captures (e.g. S001, whose right foot is on the -x plate). The physically
+    correct assignment is the one under which each foot's plantar sole sits *lower* while
+    its belt reports load (planted in stance) than while it does not (lifted in swing).
+    Returns ``+1`` or ``-1``; ties keep the ``+1`` default.
+    """
+    from biomech.contact.foot_geometry import subject_sole_from_session
+    from biomech.contact.kinematics import foot_trajectory_from_motion
+    from biomech.contact.stance import sole_world_z
+
+    lo, hi = window
+    pfmin: Dict[str, np.ndarray] = {}
+    for side, body in sides:
+        if body not in motion.body_names:
+            continue
+        sole = subject_sole_from_session(
+            static_session, spec, side, group_scales=group_scales
+        )
+        pos, quat, _, _ = foot_trajectory_from_motion(motion, body)
+        pfmin[side] = np.min(sole_world_z(sole, pos, quat), axis=1)
+
+    def _score(sign: int) -> float:
+        belt = measured_belt_grf(trial_session, sign)
+        s = 0.0
+        for side, pf in pfmin.items():
+            if side not in belt:
+                continue
+            fz = np.asarray(belt[side][0])[lo:hi, 2]
+            st = fz > fz_threshold
+            if st.any() and (~st).any():
+                s += float(np.mean(pf[~st]) - np.mean(pf[st]))
+        return s  # >0 when loaded frames are lower than unloaded (correct assignment)
+
+    return 1 if _score(1) >= _score(-1) else -1
+
+
 # ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
@@ -200,7 +249,7 @@ def run_subject_pipeline(
     phase: Optional[str] = None,
     mapping=None,
     marker_config=None,
-    right_plate_x_sign: int = 1,
+    right_plate_x_sign: Optional[int] = None,
     fz_threshold: float = 50.0,
     sole_nx: int = 14,
     sole_ny: int = 6,
@@ -225,7 +274,10 @@ def run_subject_pipeline(
             (and ``window`` is None) the window is restricted to that phase using the
             session's Speedchange protocol, then a visibility-best ``window_len`` sub-window
             is picked inside it. Requires the trial to be loaded with ``speedchange_path``.
-        right_plate_x_sign: which plate ``x_sign`` is the right foot (default +x).
+        right_plate_x_sign: which plate ``x_sign`` is the right foot. ``None`` (default)
+            auto-detects it from the kinematics (see :func:`detect_right_plate_x_sign`),
+            which is robust to labs/captures whose right foot is on the -x plate (e.g.
+            S001). Pass ``1``/``-1`` to force a specific assignment.
         fz_threshold: measured vertical GRF (N) above which a frame counts as stance.
         free_params: hydroelastic params to calibrate. Default ``("k_bed", "hc_alpha")``
             — the *vertical* stiffness/dissipation, which the measured Fz determines well.
@@ -288,6 +340,12 @@ def run_subject_pipeline(
         motion=motion,
     )
 
+    if right_plate_x_sign is None:
+        right_plate_x_sign = detect_right_plate_x_sign(
+            trial_session, static_session, spec, motion, window,
+            group_scales=fit.group_scales, fz_threshold=fz_threshold,
+        )
+    result.right_plate_x_sign = right_plate_x_sign
     belt = measured_belt_grf(trial_session, right_plate_x_sign)
     for side, body in (("R", "calcn_r"), ("L", "calcn_l")):
         if side not in belt:

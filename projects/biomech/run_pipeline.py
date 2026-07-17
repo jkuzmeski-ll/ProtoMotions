@@ -64,8 +64,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--objective", type=str, default="perframe",
                    choices=("perframe", "aggregate"),
                    help="Contact calibration objective (aggregate=robust on dynamic windows).")
-    p.add_argument("--right-plate-x-sign", type=int, default=1, choices=(1, -1),
-                   help="Which plate x_sign is the right foot (+x default).")
+    p.add_argument("--right-plate-x-sign", type=int, default=None, choices=(1, -1),
+                   help="Which plate x_sign is the right foot (default: auto-detect from "
+                        "kinematics; robust to captures whose right foot is on the -x plate).")
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--no-calibrate", action="store_true",
                    help="Skip contact calibration (reconstruction + geometry only).")

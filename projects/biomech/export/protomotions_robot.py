@@ -264,45 +264,34 @@ def register_clip_to_ground(
     """
     from biomech.contact.foot_geometry import subject_sole_from_session
     from biomech.contact.kinematics import foot_trajectory_from_motion
-    from biomech.contact.pipeline import measured_belt_grf
+    from biomech.contact.pipeline import (
+        detect_right_plate_x_sign,
+        measured_belt_grf,
+    )
     from biomech.contact.stance import (
         flat_foot_mask,
         register_ground_flatfoot,
-        sole_world_z,
     )
 
     lo, hi = window
-    # Pre-compute each foot's sole trajectory + lowest-point-per-frame once.
-    soles, trajs, pfmin = {}, {}, {}
+    # Pre-compute each foot's sole + trajectory once for the registration below.
+    soles, trajs = {}, {}
     for side, body in (("R", "calcn_r"), ("L", "calcn_l")):
         if body not in clip.body_names:
             continue
-        sole = subject_sole_from_session(
+        soles[side] = subject_sole_from_session(
             static_session, spec, side, group_scales=group_scales
         )
         pos, quat, linvel, _ = foot_trajectory_from_motion(clip, body)
-        soles[side] = sole
         trajs[side] = (pos, quat, linvel)
-        pfmin[side] = np.min(sole_world_z(sole, pos, quat), axis=1)
 
-    # Auto-detect the belt->foot assignment: the correct sign is the one where each
-    # foot's sole sits LOWER while its belt reports load than while it doesn't (planted
-    # in stance, lifted in swing). The default lab convention is wrong for some captures
-    # (e.g. S001), which would otherwise gate registration on the opposite foot.
-    def _score(sign: int) -> float:
-        belt = measured_belt_grf(trial_session, sign)
-        s = 0.0
-        for side in soles:
-            if side not in belt:
-                continue
-            fz = np.asarray(belt[side][0])[lo:hi, 2]
-            st = fz > fz_threshold
-            if st.any() and (~st).any():
-                s += float(np.mean(pfmin[side][~st]) - np.mean(pfmin[side][st]))
-        return s  # >0 when loaded frames are lower than unloaded (correct assignment)
-
+    # Auto-detect the belt->foot assignment (the default lab convention is flipped for
+    # some captures, e.g. S001) so registration is gated on the correct foot.
     if right_plate_x_sign is None:
-        right_plate_x_sign = 1 if _score(1) >= _score(-1) else -1
+        right_plate_x_sign = detect_right_plate_x_sign(
+            trial_session, static_session, spec, clip, window,
+            group_scales=group_scales, fz_threshold=fz_threshold,
+        )
     belt = measured_belt_grf(trial_session, right_plate_x_sign)
 
     planes = []
