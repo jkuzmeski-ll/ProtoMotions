@@ -227,10 +227,13 @@ def main() -> int:
             ax.set_aspect("equal"); ax.autoscale_view()
             ax.set_ylim(-0.05, 0.28)
             ax.legend(loc="upper right", fontsize=8)
-    fig.suptitle("S001 right foot: collision geometry vs sim floor (sole-registered clip); "
-                 "green = colliding foot geoms.  NOTE: posterior heel never reaches the "
-                 "floor (min ~+39 mm) -- the retargeted foot is forefoot-loaded, no heel "
-                 "strike.", fontsize=11)
+    heel_min_mm = float(heel_z.min()) * 1e3
+    fig.suptitle(
+        "S001 right foot: collision geometry vs sim floor (sole-registered clip); "
+        "green = colliding foot geoms.  Sole uses the anatomical plantar normal "
+        f"(calcn +y).  Posterior heel min = {heel_min_mm:+.0f} mm: the reconstructed "
+        "gait is forefoot-loaded (heel stays up through stance), faithful to the "
+        "capture.", fontsize=11)
     fig.tight_layout()
     fig.savefig(str(_OUT), dpi=120)
     print("wrote", _OUT)
