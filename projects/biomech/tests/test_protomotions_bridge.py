@@ -123,7 +123,7 @@ def test_robot_config_instantiates_and_validates():
         )
     # derived fields populated from the MJCF
     assert cfg.number_of_actions == cfg.kinematic_info.num_dofs
-    assert cfg.number_of_actions == 31  # coupled-knee Rajagopal sim DOFs
+    assert cfg.number_of_actions == 31  # default export: coupled-knee, MTP locked
     # semantic maps resolve to real bodies
     assert "calcn_r" in cfg.common_naming_to_robot_body_names["all_right_foot_bodies"]
     assert cfg.anchor_body_name == "torso"
@@ -210,7 +210,7 @@ def test_biomech_robot_in_factory():
     if not asset.exists():
         raise SkipTest(f"biomech asset not written: {asset}")
     cfg = robot_config("biomech")
-    assert cfg.number_of_actions == 31
+    assert cfg.number_of_actions == 33
     assert cfg.anchor_body_name == "torso"
     assert "calcn_l" in cfg.common_naming_to_robot_body_names["all_left_foot_bodies"]
 
@@ -245,6 +245,49 @@ def test_mimic_newton_experiment_builds_configs():
     exp.configure_robot_and_simulator(robot_cfg, None, args)
 
     assert terrain is not None and scene is not None and motion is not None
-    assert agent.model.actor.num_out == robot_cfg.number_of_actions == 31
+    assert agent.model.actor.num_out == robot_cfg.number_of_actions == 33
     # foot contact sensors resolved to real bodies
     assert "calcn_r" in robot_cfg.contact_bodies and "calcn_l" in robot_cfg.contact_bodies
+
+
+def test_foot_collision_switch_selects_asset():
+    """``--foot-collision`` picks the matching MJCF variant (default boxes)."""
+    _require_mujoco()
+    _require_protomotions()
+    import argparse
+    import importlib.util
+    import sys
+
+    from protomotions.robot_configs.factory import robot_config
+
+    asset = _ROOT.parents[1] / "protomotions" / "data" / "assets" / "mjcf" / "biomech_rajagopal.xml"
+    if not asset.exists():
+        raise SkipTest(f"biomech asset not written: {asset}")
+
+    exp_path = _ROOT / "experiments" / "mimic_newton.py"
+    spec_mod = importlib.util.spec_from_file_location("biomech_mimic_newton", exp_path)
+    exp = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(exp)
+
+    args = argparse.Namespace(motion_file=None, batch_size=1024, training_max_steps=1000)
+    saved_argv = sys.argv
+    try:
+        # explicit selection
+        sys.argv = ["train_agent.py", "--foot-collision", "spheres"]
+        cfg = robot_config("biomech")
+        exp.configure_robot_and_simulator(cfg, None, args)
+        assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal_spheres.xml"
+
+        # =-form
+        sys.argv = ["train_agent.py", "--foot-collision=none"]
+        cfg = robot_config("biomech")
+        exp.configure_robot_and_simulator(cfg, None, args)
+        assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal.xml"
+
+        # default when the flag is absent
+        sys.argv = ["train_agent.py"]
+        cfg = robot_config("biomech")
+        exp.configure_robot_and_simulator(cfg, None, args)
+        assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal_boxes.xml"
+    finally:
+        sys.argv = saved_argv
