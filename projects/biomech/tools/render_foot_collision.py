@@ -227,13 +227,12 @@ def main() -> int:
             ax.set_aspect("equal"); ax.autoscale_view()
             ax.set_ylim(-0.05, 0.28)
             ax.legend(loc="upper right", fontsize=8)
-    heel_min_mm = float(heel_z.min()) * 1e3
     fig.suptitle(
         "S001 right foot: collision geometry vs sim floor (sole-registered clip); "
         "green = colliding foot geoms.  Sole uses the anatomical plantar normal "
-        f"(calcn +y).  Posterior heel min = {heel_min_mm:+.0f} mm: the reconstructed "
-        "gait is forefoot-loaded (heel stays up through stance), faithful to the "
-        "capture.", fontsize=11)
+        "(calcn +y).  After the foot-flat ankle correction the stance foot is "
+        "plantigrade: heel and forefoot both rest on z=0 through midstance, then the "
+        "foot rolls into a real plantarflexed push-off and lifts in swing.", fontsize=11)
     fig.tight_layout()
     fig.savefig(str(_OUT), dpi=120)
     print("wrote", _OUT)

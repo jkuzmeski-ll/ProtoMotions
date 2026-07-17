@@ -83,7 +83,8 @@ class MarkerPlacement:
     group_scales: np.ndarray         # scales used for placement (from the static fit)
     poses: np.ndarray                # (Fw, ndof) fitted static poses used for placement
     window: Tuple[int, int]          # frame window used for the static fit
-    ankle_neutral: Dict[str, float] = None  # coord -> baked static offset (radians)
+    ankle_neutral: Optional[Dict[str, float]] = None  # coord -> baked static offset (radians)
+    foot_flat: Optional[Dict[str, float]] = None      # ankle coord -> foot-flat correction (radians)
 
 
 def unlock_mtp(spec: SkeletonSpec, sides: Sequence[str] = ("r", "l")) -> List[str]:
@@ -161,6 +162,79 @@ def register_ankle_neutral(
         c.default_value -= off
         offsets[coord] = off
     return offsets
+
+
+def compute_foot_flat_offset(
+    spec: SkeletonSpec,
+    static_poses: np.ndarray,
+    group_scales: np.ndarray,
+    coords: Sequence[str] = ("ankle_angle_r", "ankle_angle_l"),
+    device: str = "cpu",
+) -> Dict[str, float]:
+    """Ankle correction (radians) that makes each foot *flat* at the static-flat pose.
+
+    The static (calibration) trial is a foot-flat standing trial, so the plantar sole is
+    known to be horizontal. The marker fit, however, reconstructs the ``calcn`` body a
+    constant ~13-14 deg toe-down even here: the heel marker sits high on the calcaneus and
+    the offset prior pulls the foot offsets toward the model's low plantar-heel defaults, so
+    the bone rotates heel-up/toe-down to reconcile. That constant plantarflexion is then
+    frozen into the re-seated foot offsets and inherited by every dynamic frame.
+
+    This measures, per ankle, the sagittal rotation ``dq`` about the ankle DOF that drives
+    the ``calcn`` forward axis (+x) to horizontal (plantar sole flat) at the static pose.
+    Because the ankle is the leaf-side joint of the shank->foot chain, adding ``dq`` to the
+    ankle coordinate rotates *only* the foot (and its toes child) about the ankle -- the
+    pelvis/hip/knee/shank (``q`` upstream of the ankle) are untouched. Applying the same
+    constant across a dynamic clip removes the artifact while preserving the real gait
+    plantar/dorsiflexion (the frame-to-frame ankle motion) exactly.
+
+    The returned value is a coordinate *delta*, which is invariant to the ankle-neutral
+    zero-shift baked by :func:`register_ankle_neutral`, so it is valid to add to poses
+    expressed in either the pre- or post-neutral-bake frame.
+
+    Returns ``{coordinate_name: dq_radians}`` for each ankle coordinate resolved.
+    """
+    from biomech.skeleton.skeleton import WarpSkeleton
+
+    static_poses = np.asarray(static_poses, dtype=np.float64)
+    group_scales = np.asarray(group_scales, dtype=np.float64)
+    dof = spec.dof_index_map()
+    body_index = {b.name: i for i, b in enumerate(spec.bodies)}
+    skel = WarpSkeleton(spec, device=device)
+
+    def _toe_down(poses: np.ndarray, bi: int) -> float:
+        # mean toe-down (rad) of the calcn +x axis (OpenSim vertical = +y) over frames
+        world, _ = skel.forward(poses, group_scales)
+        Rc = np.asarray(world)[:, bi, :3, :3]
+        fx_y = Rc @ np.array([1.0, 0.0, 0.0])  # (F,3); take vertical component [:,1]
+        return float(np.mean(-np.arcsin(np.clip(fx_y[:, 1], -1.0, 1.0))))
+
+    out: Dict[str, float] = {}
+    for coord in coords:
+        if coord not in dof:
+            continue
+        side = coord.rsplit("_", 1)[-1]  # "r" / "l"
+        body = f"calcn_{side}"
+        if body not in body_index:
+            continue
+        j = dof[coord]
+        bi = body_index[body]
+        # Newton on the (near-linear) toe-down(dq) with FK-measured local sensitivity.
+        dq = 0.0
+        for _ in range(4):
+            p = static_poses.copy()
+            p[:, j] += dq
+            f0 = _toe_down(p, bi)
+            if abs(f0) < 1e-4:  # < ~0.006 deg
+                break
+            eps = 1e-3
+            p[:, j] += eps
+            slope = (_toe_down(p, bi) - f0) / eps
+            if abs(slope) < 1e-6:
+                break
+            dq -= f0 / slope
+        out[coord] = dq
+    return out
 
 
 def _body_group_map(spec: SkeletonSpec) -> Dict[str, int]:
@@ -295,6 +369,16 @@ def place_foot_markers(
     if unlock_mtp_joint:
         unlocked = unlock_mtp(spec, sides=tuple(s.lower() for s in sides))
 
+    # 5b) Foot-flat correction: measure the constant ankle rotation that flattens each foot
+    #     at the (known foot-flat) static pose. Computed *before* the ankle-neutral bake so
+    #     poses/spec are in one consistent frame; the result is a zero-shift-invariant delta
+    #     applied to the ankle DOF at export to plant the plantar sole in stance.
+    foot_flat: Dict[str, float] = {}
+    flat_coords = tuple(f"ankle_angle_{s.lower()}" for s in sides)
+    foot_flat = compute_foot_flat_offset(
+        spec, poses, group_scales, coords=flat_coords, device=device
+    )
+
     # 6) Re-zero the ankle at the static (standing) neutral (PiG static-offset correction).
     ankle_neutral: Dict[str, float] = {}
     if register_neutral:
@@ -313,4 +397,5 @@ def place_foot_markers(
         poses=poses,
         window=(lo, hi),
         ankle_neutral=ankle_neutral,
+        foot_flat=foot_flat,
     )

@@ -173,7 +173,7 @@ def reconstruct():
         per_marker_rms=per_marker_rms, marker_names=model_names,
         rigid_body_pos=rbp, body_names=body_names,
         grf=grf, t=t, window=(lo, hi), fps=session.point_rate,
-        ankle_neutral=pl.ankle_neutral,
+        ankle_neutral=pl.ankle_neutral, foot_flat=pl.foot_flat,
     )
 
 
@@ -208,6 +208,7 @@ def load_or_reconstruct(fresh: bool = False):
         t=R["t"], window=np.array(R["window"]), fps=R["fps"],
         spec_pickle=np.array(R["spec"], dtype=object),
         ankle_neutral=np.array(R["ankle_neutral"], dtype=object),
+        foot_flat=np.array(R["foot_flat"], dtype=object),
     )
     for side in R["grf"]:
         save[f"grf_{side}"] = R["grf"][side]
