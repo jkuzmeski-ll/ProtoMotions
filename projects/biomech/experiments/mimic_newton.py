@@ -106,7 +106,6 @@ def env_config(robot_cfg: RobotConfig, args: argparse.Namespace) -> EnvConfig:
     from protomotions.envs.action import make_pd_action_config
     from protomotions.envs.component_factories import (
         action_smoothness_factory,
-        contact_match_rew_factory,
         max_coords_obs_factory,
         mimic_target_poses_max_coords_factory,
         mimic_tracking_rewards_factory,
@@ -144,9 +143,11 @@ def env_config(robot_cfg: RobotConfig, args: argparse.Namespace) -> EnvConfig:
             rh_coef=-100.0,
         ),
         "pow_rew": pow_rew_factory(weight=-1e-5, min_value=-0.5),
-        "contact_match_rew": contact_match_rew_factory(
-            weight=-0.1, zero_during_grace_period=True
-        ),
+        # NOTE: contact_match_rew is disabled because the exported .motion does not
+        # carry per-body reference contact labels (rigid_body_contacts). Re-enable it
+        # once the motion is regenerated with GRF-derived contact detection; without
+        # ref contacts the reward crashes (ref_contacts is None). The sim-side
+        # foot-ground collision (boxes vs the floor) is unaffected by this.
     }
 
     return EnvConfig(
