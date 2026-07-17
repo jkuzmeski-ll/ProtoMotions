@@ -471,6 +471,39 @@ biomech/
   * **Diagnostics added** (`tools/diagnose_plantar_normal.py`, `diagnose_sole_reference.py`,
     `diagnose_measured_foot.py`, `diagnose_heel_contact.py`) reproduce all of the above.
     Re-exported assets/motion + refreshed `docs/figures/foot_collision_check.png`.
+
+  **SUPERSEDES the "forefoot-loaded is real motion" claim above — commits `4684490`/`44c0be6`.**
+  The `up=+y` sole fix was genuine but did NOT resolve the toe-down; deeper investigation
+  proved the stance foot is a **fit artifact, not real gait**:
+  * **Axis pitfall (invalidated earlier "flat" reads):** the walk is along world -Y / OpenSim
+    +z, NOT +x, so `arctan2(nx,ny|nz)` measures the wrong plane. Use `heel_z-toe_z` or the
+    forward-axis vertical component only.
+  * **Model-free ground truth** (`diagnose_measured_stance.py`, raw markers, no skeleton): the
+    REAL captured foot is essentially flat in stance -- RHEE-forefoot rises only ~14 mm
+    (~3.4 deg) from flat standing to loaded stance. The subject is NOT meaningfully
+    forefoot-loaded; the earlier "heel up ~40 mm" was the tilted-sole/bone-vs-marker artifact.
+  * **The artifact is a constant ~14 deg** (`diagnose_foot_pitch_final.py`): the fitted calcn
+    +x is **13.7 deg toe-down at the known foot-flat static pose** and 15.6 deg at loaded
+    stance (dynamic-static = 1.9 deg = the real gait). The Rajagopal calcn frame is anatomically
+    flat at q=0 (0.0 deg), so 13.7 deg is pure artifact. **NOT the stock RTOE** (removing it made
+    it worse, `diagnose_placement_source.py`): the high-mounted heel marker (~39 mm up the
+    calcaneus) vs the offset prior rotates the bone heel-up/toe-down, frozen into every frame.
+  * **FIX (commit `4684490`):** `marker_placement.compute_foot_flat_offset` measures, per ankle,
+    the sagittal rotation that drives calcn +x horizontal at the static-flat pose; carried
+    through the fit cache (`foot_flat`) and applied to the ankle DOF at export
+    (`export_s001_subject.py`, with a fresh-static-fit fallback for old caches). **Ankle-only, so
+    pelvis/hip/knee/shank (q[0:10]) are untouched** -- only the foot + toes rotate. Corrections:
+    R 13.79 deg, L 14.7 deg. Post-fix exported `.motion` (`diagnose_foot_posture.py`): loaded
+    stance forward-axis pitch **2.1 deg** (was ~15), plantar-normal **0.9 deg**, heel-toe dz
+    12 mm (was ~73). Gait now heel-strike(dorsiflex)->flat stance->plantarflexed push-off.
+    `check_foot_collision.py`: calcn stance min -6/-11 mm (was floating +73). Refreshed render.
+  * **Residual (unchanged, separate limitation):** rigid boxes + single z-shift can't plant a
+    rolling foot -- toes_r box penetrates ~-31 mm at push-off while toes float ~+11 mm in
+    stance. Follow-up: per-phase / soft ground registration.
+  * **Pre-existing unrelated test failure:** `test_foot_geometry.py::test_subject_sole_drives_contact`
+    fails since `b91eb32` (`up=+y` sole) -- `build_subject_sole` min body-y is 0.0, so the
+    `assert lo < 0.0` (test uses body-y as the down axis) no longer holds for the synthetic
+    spec. Independent of the foot-flat fix; not addressed (would touch the shipped sole fix).
   **SIM WIRING DONE** (commit `50f425f`): `--foot-collision {none,spheres,boxes}` (default
   `boxes`) in `experiments/mimic_newton.py::configure_robot_and_simulator` swaps
   `robot_cfg.asset.asset_file_name` to the matching MJCF (parsed from `sys.argv` because
