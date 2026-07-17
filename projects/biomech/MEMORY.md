@@ -441,6 +441,36 @@ biomech/
   dorsiflexes" concern. **TODO: investigate the right-ankle pitch / heel-strike** (compare
   the sole-registered `.motion` ankle angle vs the bone-check `+8 deg dorsiflexion` datum;
   the two disagree -> likely an ankle-neutral-bake / registration-datum mismatch).
+
+  **RESOLVED (root-caused) — commits `b91eb32`/`44d6890`/`37acd0b`.** The dramatic
+  heel-clearance numbers above were largely an **artifact of a badly tilted sole**, and
+  the underlying gait is faithful. Findings, in order:
+  * **Real bug (fixed):** `contact.foot_geometry._foot_axes` built the plantar plane as
+    the *normal of the skin-marker triangle* (RCAL heel / RMT5 5th-met / RTOE met-2), which
+    sit dorsolaterally on the foot. That normal was `up=[-0.086,0.906,0.414]`, i.e. **26.5
+    deg off the true plantar surface (24.6 deg of it a mediolateral roll)**. Fit of the
+    calcaneus **bone** plantar band gives `[-0.014,0.999,-0.029]` == calcn +y to **1.8
+    deg**, so the anatomical plantar normal is simply **calcn +y**. Fixed `_foot_axes` to
+    use `up=+y` with the foot heading projected into the horizontal plane. This corrupted
+    both the collision geoms and the ground-registration flat-foot test; it also made every
+    earlier sole-based "heel +22/+38 mm, 12 deg toe-down" measurement bogus.
+  * **No IK / ankle bias.** Measured vs fitted right-foot marker heights (RHEE vs
+    forefoot) correlate **0.999** (bias -5.3 mm); the fit reproduces the capture. The
+    measured foot DOES go heel-down (heel 57 mm below forefoot at frame 18), i.e. it
+    kinematically heel-strikes.
+  * **Handoff contradiction resolved.** Because the bone plantar == calcn +y, "foot flat on
+    floor" <=> calcn +y vertical, so the ankle-neutral bake is consistent. The dynamic
+    "+10 deg toe-down at midstance" is real: the **shank leans forward ~10 deg** at loading
+    while the ankle is ~0 (normal gait). The subject is genuinely **forefoot-loaded** on the
+    treadmill -- the heel strikes lightly then the forefoot bears the load with the heel up
+    ~40 mm. "Heel never plants flat under load" is the real motion, not a bug.
+  * **Residual limitation (not the reported bug):** with rigid collision boxes + a single
+    z-shift, a rolling foot can't contact perfectly -- during load the `calcn_r` box floats
+    ~+9 mm while the articulating `toes_r` box penetrates ~-22 mm at push-off. Follow-up
+    candidates: per-phase / soft ground registration, or a small penetration allowance.
+  * **Diagnostics added** (`tools/diagnose_plantar_normal.py`, `diagnose_sole_reference.py`,
+    `diagnose_measured_foot.py`, `diagnose_heel_contact.py`) reproduce all of the above.
+    Re-exported assets/motion + refreshed `docs/figures/foot_collision_check.png`.
   **SIM WIRING DONE** (commit `50f425f`): `--foot-collision {none,spheres,boxes}` (default
   `boxes`) in `experiments/mimic_newton.py::configure_robot_and_simulator` swaps
   `robot_cfg.asset.asset_file_name` to the matching MJCF (parsed from `sys.argv` because
