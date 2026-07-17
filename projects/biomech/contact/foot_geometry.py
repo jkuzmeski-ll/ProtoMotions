@@ -189,17 +189,30 @@ class SolePads:
 
 
 def _foot_axes(anchors: FootAnchors) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build (forward, lateral, up) orthonormal axes in the calcn frame from anchors."""
-    forward = _unit(anchors.toe - anchors.heel)
-    lat0 = anchors.mt5 - anchors.heel
-    lat0 = lat0 - (lat0 @ forward) * forward
-    lateral = _unit(lat0)  # points toward the 5th metatarsal (lateral)
-    up = _unit(np.cross(forward, lateral))
-    # up should point toward the ankle (+y in the OpenSim calcn frame)
-    if up[1] < 0.0:
-        up = -up
-        lateral = -lateral
+    """Build (forward, lateral, up) orthonormal axes in the calcn frame from anchors.
+
+    The plantar normal (``up``) is the calcn frame's own +y axis, which is the anatomical
+    plantar-up direction: it matches the calcaneus bone's plantar surface to ~2 deg (SVD
+    fit of the plantar mesh band). The *marker-triangle* normal (heel/mt5/toe skin
+    markers) is NOT the plantar surface -- the heel marker sits on the posterior
+    calcaneus and the metatarsal-head markers sit dorsolaterally, so using their triangle
+    normal rolled the old sole ~25 deg (24.6 deg of it a spurious mediolateral roll).
+    That tilt corrupted both the foot collision geometry and the ground-registration datum
+    (a pure z-shift then dropped the tilted sole's lateral/forefoot corner onto z=0,
+    floating the posterior heel ~38 mm and making it never contact).
+
+    We keep the subject's foot *heading* from the heel->toe anchors but project it into
+    the plantar (X-Z) plane, so the sole is the true (near-horizontal) plantar contact
+    plane while still following the subject's foot progression.
+    """
+    up = np.array([0.0, 1.0, 0.0], dtype=np.float64)  # anatomical plantar normal (+y)
+    forward = anchors.toe - anchors.heel
+    forward = forward - (forward @ up) * up  # drop the (spurious) sagittal tilt
+    forward = _unit(forward)
     lateral = _unit(np.cross(up, forward))
+    # orient lateral toward the 5th metatarsal (lateral), so t>0 is lateral / t<0 medial
+    if (anchors.mt5 - anchors.heel) @ lateral < 0.0:
+        lateral = -lateral
     return forward, lateral, up
 
 

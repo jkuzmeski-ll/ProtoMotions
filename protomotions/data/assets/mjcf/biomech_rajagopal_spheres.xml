@@ -148,17 +148,17 @@
                           <site name="mk_RCAL3" pos="-0.004378464852159863 -0.0285890716425825 0.02901824316318809" size="0.01" group="4"/>
                           <site name="mk_RMT1" pos="0.20341483836983157 0.023045832421513965 -0.06312778032972535" size="0.01" group="4"/>
                           <geom type="mesh" mesh="r_foot" group="1" contype="0" conaffinity="0" density="0" rgba="0.90 0.88 0.80 1"/>
-                          <geom name="col_calcn_r_heel_lat" type="sphere" size="0.022" pos="0.0034637271838240703 -0.000539310726371249 -0.0424790573621994" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                          <geom name="col_calcn_r_heel_med" type="sphere" size="0.022" pos="0.0034637271838240703 -0.000539310726371249 0.0021671364677002918" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                          <geom name="col_calcn_r_ball_lat" type="sphere" size="0.022" pos="0.17017072704367858 -0.000539310726371249 -0.0424790573621994" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                          <geom name="col_calcn_r_ball_med" type="sphere" size="0.022" pos="0.17017072704367858 -0.000539310726371249 0.0021671364677002918" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_r_heel_lat" type="sphere" size="0.022" pos="0.003065869346106566 0.007628623846099622 -0.038711426226496" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_r_heel_med" type="sphere" size="0.022" pos="0.003065869346106566 0.007628623846099622 0.014732711269727958" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_r_ball_lat" type="sphere" size="0.022" pos="0.17146078019206992 0.007628623846099622 -0.038711426226496" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_r_ball_med" type="sphere" size="0.022" pos="0.17146078019206992 0.007628623846099622 0.014732711269727958" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
                           <body name="toes_r" pos="0.19425530640263713 -0.001989473646256642 0.0010702624923030677" quat="1.0 0.0 0.0 0.0">
                             <joint name="mtp_r__mtp_angle_r" type="hinge" axis="0.5809541881928421 2.629900609373145e-15 -0.8139362574681115" pos="0.0 0.0 0.0" range="-0.52359878 0.52359878"/>
                             <inertial pos="0.03168110549809604 0.006399427354693156 -0.013982053989762414" mass="0.2166" fullinertia="8.87967226604907e-05 0.0001476754845347798 0.0009879843757355212 0.0 0.0 0.0"/>
                             <site name="mk_RTOE_TIP" pos="0.05917332758596492 0.051938623374507845 -0.03713953252940549" size="0.01" group="4"/>
                             <geom type="mesh" mesh="r_bofoot" group="1" contype="0" conaffinity="0" density="0" rgba="0.90 0.88 0.80 1"/>
-                            <geom name="col_toes_r_lat" type="sphere" size="0.018" pos="0.039520657773573484 -0.0025498370801146086 -0.04291011823236597" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                            <geom name="col_toes_r_med" type="sphere" size="0.018" pos="0.039520657773573484 -0.0025498370801146086 0.0007658000069482376" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_r_lat" type="sphere" size="0.018" pos="0.038572132620578056 0.005618097492356264 -0.038450052914978425" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_r_med" type="sphere" size="0.018" pos="0.038572132620578056 0.005618097492356264 0.013017526763061917" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
                           </body>
                         </body>
                       </body>
@@ -226,17 +226,17 @@
                           <site name="mk_LCAL3" pos="-0.008554809248700881 -0.03254652874464322 -0.028998329108577144" size="0.01" group="4"/>
                           <site name="mk_LMT1" pos="0.20367662624090654 0.022611522508814066 0.06671362190164347" size="0.01" group="4"/>
                           <geom type="mesh" mesh="l_foot" group="1" contype="0" conaffinity="0" density="0" rgba="0.90 0.88 0.80 1"/>
-                          <geom name="col_calcn_l_heel_lat" type="sphere" size="0.022" pos="0.00277730158978496 0.003848113448765546 -0.005455114898151869" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                          <geom name="col_calcn_l_heel_med" type="sphere" size="0.022" pos="0.00277730158978496 0.003848113448765546 0.03958187590293828" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                          <geom name="col_calcn_l_ball_lat" type="sphere" size="0.022" pos="0.16384328553698793 0.003848113448765546 -0.005455114898151869" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                          <geom name="col_calcn_l_ball_med" type="sphere" size="0.022" pos="0.16384328553698793 0.003848113448765546 0.03958187590293828" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_l_heel_lat" type="sphere" size="0.022" pos="0.0022955473494572394 0.011472361273165818 -0.016885523315477137" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_l_heel_med" type="sphere" size="0.022" pos="0.0022955473494572394 0.011472361273165818 0.035688206446853735" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_l_ball_lat" type="sphere" size="0.022" pos="0.16178869643387386 0.011472361273165818 -0.016885523315477137" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                          <geom name="col_calcn_l_ball_med" type="sphere" size="0.022" pos="0.16178869643387386 0.011472361273165818 0.035688206446853735" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
                           <body name="toes_l" pos="0.19390203560102937 -0.0019262718718327616 -0.001092803311799853" quat="1.0 0.0 0.0 0.0">
                             <joint name="mtp_l__mtp_angle_l" type="hinge" axis="-0.5809541881928421 2.629900609373145e-15 -0.8139362574681115" pos="0.0 0.0 0.0" range="-0.52359878 0.52359878"/>
                             <inertial pos="0.03144659897319225 0.0065140704519369794 0.014078907688145409" mass="0.2166" fullinertia="9.129661777009994e-05 0.00014732635055891952 0.0010023631821157774 0.0 0.0 0.0"/>
                             <site name="mk_LTOE_TIP" pos="0.06243648504077278 0.055110131340670894 0.029962371602407223" size="0.01" group="4"/>
                             <geom type="mesh" mesh="l_bofoot" group="1" contype="0" conaffinity="0" density="0" rgba="0.90 0.88 0.80 1"/>
-                            <geom name="col_toes_l_lat" type="sphere" size="0.018" pos="0.04426417371258286 0.0017743853205983082 -0.004238244398512874" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                            <geom name="col_toes_l_med" type="sphere" size="0.018" pos="0.04426417371258286 0.0017743853205983082 0.04272399468516787" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_l_lat" type="sphere" size="0.018" pos="0.043218353815865876 0.009398633144998579 -0.01540540116036904" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_l_med" type="sphere" size="0.018" pos="0.043218353815865876 0.009398633144998579 0.03857936568383087" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
                           </body>
                         </body>
                       </body>
