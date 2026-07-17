@@ -317,6 +317,97 @@ def register_clip_to_ground(
     return ground
 
 
+def _body_collision_points(model, body_id) -> np.ndarray:
+    """Colliding geom surface points for a body, in its MJCF (Y-up) local frame.
+
+    Boxes contribute their 8 corners; spheres their single bottom point (local -y). Only
+    geoms that actually collide (``contype``/``conaffinity`` != 0) are included, so this
+    matches what the simulator's foot contact sensor can register. Returns ``(P, 3)`` (may
+    be empty for a body with no colliders, e.g. ``talus``).
+    """
+    import mujoco
+
+    pts: list[np.ndarray] = []
+    signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1)
+                      for sz in (-1, 1)], dtype=np.float64)
+    for g in range(model.ngeom):
+        if model.geom_bodyid[g] != body_id:
+            continue
+        if model.geom_contype[g] == 0 and model.geom_conaffinity[g] == 0:
+            continue  # visual only
+        gp = model.geom_pos[g].astype(np.float64)
+        gt = model.geom_type[g]
+        if gt == mujoco.mjtGeom.mjGEOM_BOX:
+            pts.append(gp + signs * model.geom_size[g].astype(np.float64))
+        elif gt == mujoco.mjtGeom.mjGEOM_SPHERE:
+            r = float(model.geom_size[g][0])
+            pts.append(gp[None, :] + np.array([[0.0, -r, 0.0]]))  # plantar (-y) point
+        else:  # capsule/other: use the center as a coarse fallback
+            pts.append(gp[None, :])
+    if not pts:
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.concatenate(pts, axis=0)
+
+
+def foot_contacts_from_clip(
+    clip: MotionExportResult,
+    mjcf_path: str,
+    grf_by_side: dict,
+    *,
+    sides: tuple[str, ...] = ("R", "L"),
+    height_thresh: float = 0.02,
+    load_frac: float = 0.25,
+    load_floor: float = 50.0,
+):
+    """Per-body foot-contact labels ``[F, num_bodies]`` (bool) aligned to ``clip.body_names``.
+
+    A foot body registers contact on a frame when BOTH:
+
+    * its lowest colliding-geom point is within ``height_thresh`` (m) of the sim floor
+      (z = 0, the ground-registration datum), giving real per-body heel/toe timing, AND
+    * the measured GRF for that foot exceeds ``max(load_floor, load_frac * peak)`` N, which
+      removes swing-phase near-ground false positives and light scuffs.
+
+    Geom points live in the MJCF (Y-up) body frame; the clip stores each body's Z-up world
+    quaternion (Y-up->Z-up folded in), so rotating the local points by that quaternion and
+    adding the world position yields the Z-up world point directly. Bodies without
+    colliders (e.g. ``talus``) never contact, matching the simulator's foot sensors.
+
+    ``grf_by_side`` maps side ("R"/"L") -> per-frame vertical-or-3-vector GRF ``(F,)``/``(F,3)``.
+    Returns a ``torch.bool`` tensor.
+    """
+    import mujoco
+    import torch
+
+    from biomech.contact.elastic_foundation import _quat_rotate_np
+    from biomech.contact.kinematics import foot_trajectory_from_motion
+
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    body_names = list(clip.body_names)
+    n_frames = int(np.asarray(clip.data["rigid_body_pos"]).shape[0])
+    contacts = np.zeros((n_frames, len(body_names)), dtype=bool)
+
+    for side in sides:
+        grf = np.asarray(grf_by_side[side], dtype=np.float64)
+        fz = grf[:, 2] if grf.ndim == 2 else grf
+        peak = float(np.nanmax(fz)) if fz.size else 0.0
+        loaded = fz > max(load_floor, load_frac * peak)
+        for body in (f"calcn_{side.lower()}", f"toes_{side.lower()}"):
+            if body not in body_names:
+                continue
+            bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
+            local = _body_collision_points(model, bid)
+            if local.shape[0] == 0:
+                continue
+            pos, quat, _, _ = foot_trajectory_from_motion(clip, body)
+            world = pos[:, None, :] + _quat_rotate_np(quat[:, None, :],
+                                                      local[None, :, :])
+            min_z = world[:, :, 2].min(axis=1)
+            contacts[:, body_names.index(body)] = (min_z < height_thresh) & loaded
+
+    return torch.from_numpy(contacts)
+
+
 # ---------------------------------------------------------------------------
 # 3. RobotConfig
 # ---------------------------------------------------------------------------

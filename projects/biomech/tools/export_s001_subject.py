@@ -31,6 +31,7 @@ import torch  # noqa: E402
 
 from biomech.export.protomotions_robot import (  # noqa: E402
     build_simbody_motion,
+    foot_contacts_from_clip,
     register_clip_to_ground,
     write_biomech_asset,
 )
@@ -181,6 +182,27 @@ def main() -> int:
                   f"({n_sph} spheres, {n_box} boxes)")
     else:
         print("NOTE: static trial unavailable; skipping foot collision variants.")
+
+    # 2d. Per-body foot-contact labels for the mimic contact_match reward. Derived from
+    #     the measured per-foot GRF (contact iff the foot is loaded) gated by each foot
+    #     body's collision-geom height above the registered floor (real heel/toe timing).
+    #     Uses the boxes collision asset (plantar surface identical to spheres, so contact
+    #     timing matches either training variant). Without these the reference has no
+    #     contact labels and contact_match crashes / must be disabled.
+    if static_session is not None and "grf_R" in cache.files and "grf_L" in cache.files:
+        grf_by_side = {"R": np.asarray(cache["grf_R"]), "L": np.asarray(cache["grf_L"])}
+        boxes_path = _REPO / "protomotions" / "data" / "assets" / _ASSET_NAME_BOXES
+        clip.data["rigid_body_contacts"] = foot_contacts_from_clip(
+            clip, str(boxes_path), grf_by_side
+        )
+        rc = clip.data["rigid_body_contacts"]
+        n_on = int(rc.sum())
+        per_body = {clip.body_names[i]: int(rc[:, i].sum())
+                    for i in range(rc.shape[1]) if int(rc[:, i].sum()) > 0}
+        print(f"  foot contacts: {n_on} body-frames flagged across {rc.shape[0]} frames "
+              f"-> {per_body}")
+    else:
+        print("NOTE: GRF / static trial unavailable; motion has no contact labels.")
 
     _MOTION_OUT.parent.mkdir(parents=True, exist_ok=True)
     torch.save(clip.data, str(_MOTION_OUT))
