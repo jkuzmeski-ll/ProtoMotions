@@ -386,12 +386,20 @@ biomech/
   error, not the datum). **Belt->foot assignment is FLIPPED for S001**: with the pipeline
   default `right_plate_x_sign=1` the right heel is HIGHER during "stance" than "swing"
   (backwards); `-1` is correct. `register_clip_to_ground` auto-detects the sign (picks the
-  one where each foot's sole is lower while its belt is loaded). NOTE/TODO: the wider
-  pipeline (`run_subject_pipeline`, cache `grf_R/grf_L`, fig 9 GRF shading, contact
-  calibration) still uses the default sign=1 -> its R/L GRF are likely swapped; needs an
-  audit (may explain any GRF/leg phase oddities) but was left untouched to avoid churning
-  goldens. Pre-existing stale tests (unrelated): `test_protomotions_bridge` asserts
-  `number_of_actions==31` but the MTP unlock made it 33 (fails on HEAD before this work).
+  one where each foot's sole is lower while its belt is loaded). **RESOLVED (belt audit,
+  commit `31227f3`):** the flip is confirmed (S001's right foot is on the −x plate, so
+  `right_plate_x_sign=-1`; old cache `grf_R`==new `grf_L` exactly, a pure R/L swap that went
+  unnoticed because gait is near-symmetric). Auto-detect now lives in
+  `contact/pipeline.py::detect_right_plate_x_sign` and is the default (`right_plate_x_sign=None`
+  -> auto) across `run_subject_pipeline`, `register_clip_to_ground`, `run_pipeline.py`, and
+  `make_s001_ik_figures.py`; the S001 IK cache + fig 9 were regenerated (per-foot stance
+  shading now aligns with each leg). `make_tracking_figures.py` uses *simulated* drop GRF
+  (not belt) so it was unaffected; `benchmark_s001_ik.py` dead-stores belt GRF (never plots)
+  so left as-is. Auto-detect is only well-posed on a **gait** window (a quiet-standing window
+  is ambiguous and returns +1); new test `test_contact_pipeline.py::test_detect_right_plate_x_sign_walk`.
+  Pre-existing stale tests were updated: `test_protomotions_bridge` factory/experiment tests
+  now assert `number_of_actions==33` (shipped asset has MTP unlocked); the fresh-default-export
+  test keeps 31 (default `export_mjcf` locks the MTP).
 
 - **Foot-ground collision geometry DONE** (`export/foot_collision.py`, wired through
   `export/mjcf.py::export_mjcf(collision_geoms=...)` +
@@ -409,9 +417,29 @@ biomech/
   to hit the terrain floor. Verified with `tools/check_foot_collision.py`: during measured
   right stance the collision surface reaches the floor (spheres calcn ~-0.2 mm / toes
   ~+3.5 mm; boxes calcn ~-2.5 mm / toes ~-3.6 mm) and clears ~9-11 cm in swing -- vs the
-  original 3-7 cm float. TODO: wire a `--foot-collision {spheres,boxes}` choice into the
-  biomech `RobotConfig`/`experiments/mimic_newton.py`, and confirm ProtoMotions'
-  `self_collisions=False` doesn't strip the foot contype/conaffinity in-sim.
+  original 3-7 cm float. **RENDER CHECK DONE** (`tools/render_foot_collision.py` ->
+  `docs/figures/foot_collision_check.png`): drives the sole-registered `.motion` and, per
+  scheme, overlays the green foot geoms on the right-foot bone mesh in the foot sagittal
+  plane at three auto-picked frames (heel contact = argmin of the *calcaneus* geoms' lowest
+  world-z; deepest push-off contact = argmin of all foot geoms' lowest z; swing = argmax).
+  Confirms the **calcaneus geom does reach the floor** (heel −10 mm spheres / −16 mm boxes),
+  answering the old "calcaneus never hits the ground" impression (that came from a bone-only
+  datum; against the collision geoms + registered clip the heel clearly contacts).
+  **SIM WIRING DONE** (commit `50f425f`): `--foot-collision {none,spheres,boxes}` (default
+  `boxes`) in `experiments/mimic_newton.py::configure_robot_and_simulator` swaps
+  `robot_cfg.asset.asset_file_name` to the matching MJCF (parsed from `sys.argv` because
+  `train_agent.py` uses `parse_known_args`; all variants share topology/DOFs so the already-
+  extracted `kinematic_info`/`control_info` stay valid -- only the geoms differ). **Newton
+  keys collider-vs-visual off `contype/conaffinity` (import_mjcf.py L1120-1148):** geoms with
+  `=0` -> visuals, `=1` -> colliders, INDEPENDENT of `enable_self_collisions` (which only
+  governs robot self-pairs). Verified by loading each MJCF via `add_mjcf(...,
+  enable_self_collisions=False)`: boxes -> 4 foot colliders, spheres -> 12, and **0 of 157
+  visual shapes collide**. Physics drop test `tools/check_sim_foot_contact.py` (SolverMuJoCo
+  + ground plane, drop ~0.5 m): boxes/spheres feet are STOPPED at the floor (box center rests
+  +15 mm = bottom ~0; sphere −10 mm transient impact), while the `none` negative control
+  free-falls to root z ≈ −9.7 m. Foot contact sensors (`contact_bodies=[all_left/right_foot_
+  bodies]`) resolve to the real foot bodies (`test_mimic_newton_experiment_builds_configs`).
+  New test `test_foot_collision_switch_selects_asset`.
 
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
