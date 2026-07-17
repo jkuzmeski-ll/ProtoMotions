@@ -488,15 +488,24 @@ biomech/
     flat at q=0 (0.0 deg), so 13.7 deg is pure artifact. **NOT the stock RTOE** (removing it made
     it worse, `diagnose_placement_source.py`): the high-mounted heel marker (~39 mm up the
     calcaneus) vs the offset prior rotates the bone heel-up/toe-down, frozen into every frame.
-  * **FIX (commit `4684490`):** `marker_placement.compute_foot_flat_offset` measures, per ankle,
-    the sagittal rotation that drives calcn +x horizontal at the static-flat pose; carried
-    through the fit cache (`foot_flat`) and applied to the ankle DOF at export
-    (`export_s001_subject.py`, with a fresh-static-fit fallback for old caches). **Ankle-only, so
+  * **FIX (commits `4684490` then consolidated):** `marker_placement.compute_foot_flat_offset`
+    measures, per ankle, the sagittal rotation that drives calcn +x horizontal at the static-flat
+    pose (computed in `place_foot_markers` step 5b from the RAW static fit -- it does NOT modify
+    the placement poses). It is carried through the fit cache (`foot_flat`) and applied **post-hoc**
+    in `make_s001_ik_figures.reconstruct()` via `apply_foot_flat_to_poses` -- i.e. added to the
+    cached poses' ankle DOF before `build_motion`, so every downstream consumer (figures, .motion,
+    export, diagnostics) reads already-corrected poses (marker RMS above stays measured on the raw
+    fit at 8.6 mm). Export/render/diagnostics must NOT re-apply it (double-correction); the old
+    export-time application + fallback and `verify_foot_flat.py` were removed. **Ankle-only, so
     pelvis/hip/knee/shank (q[0:10]) are untouched** -- only the foot + toes rotate. Corrections:
     R 13.79 deg, L 14.7 deg. Post-fix exported `.motion` (`diagnose_foot_posture.py`): loaded
     stance forward-axis pitch **2.1 deg** (was ~15), plantar-normal **0.9 deg**, heel-toe dz
     12 mm (was ~73). Gait now heel-strike(dorsiflex)->flat stance->plantarflexed push-off.
     `check_foot_collision.py`: calcn stance min -6/-11 mm (was floating +73). Refreshed render.
+    **REJECTED root-fix:** flattening the foot in `place_foot_markers` BEFORE reseating offsets
+    (rotate placement poses, then reseat) gave flat feet + unchanged RMS but broke MTP
+    observability -- rotating about the ankle mis-places the distal hallux (RTOE_TIP MTP lever
+    collapsed >10 mm -> ~3.86 mm) and shifted ankle_neutral +7 deg. Post-hoc preserves both.
   * **Residual (unchanged, separate limitation):** rigid boxes + single z-shift can't plant a
     rolling foot -- toes_r box penetrates ~-31 mm at push-off while toes float ~+11 mm in
     stance. Follow-up: per-phase / soft ground registration.
