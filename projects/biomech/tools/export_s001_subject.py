@@ -50,6 +50,8 @@ _OSIM = _BIOMECH / "models" / "rajagopal_data" / "Rajagopal2015.osim"
 _CACHE = _BIOMECH / "docs" / "figures" / "_s001_ik_cache.npz"
 _MOTION_OUT = _BIOMECH / "data" / "motions" / "biomech_s001_walk.motion"
 _ASSET_NAME = "mjcf/biomech_rajagopal.xml"
+_ASSET_NAME_SPHERES = "mjcf/biomech_rajagopal_spheres.xml"
+_ASSET_NAME_BOXES = "mjcf/biomech_rajagopal_boxes.xml"
 
 
 def _load_belt_speed(window: tuple[int, int]) -> np.ndarray | None:
@@ -144,7 +146,37 @@ def main() -> int:
         print(f"  ground registration: dropped clip by {ground:.4f} m "
               f"(stance sole now rests on z=0)")
     else:
+        static_session = None
         print("NOTE: static/belt trials unavailable; skipping ground registration.")
+
+    # 2c. Foot-ground collision variants. The visual bone meshes are non-colliding, so a
+    #     physically simulated mimic character needs explicit foot collision geometry.
+    #     Emit two comparable assets (same skeleton/FK/inertia + the shared motion clip):
+    #     an OpenSim-style multi-sphere foot and a ProtoMotions-style single-box-per-body
+    #     foot, both sized to the subject's real plantar sole so they touch z=0 in stance.
+    if static_session is not None:
+        from biomech.export.foot_collision import foot_collision_geoms
+
+        for scheme, asset_name in (
+            ("spheres", _ASSET_NAME_SPHERES),
+            ("boxes", _ASSET_NAME_BOXES),
+        ):
+            geoms = foot_collision_geoms(spec, scales, scheme, static_session)
+            path = write_biomech_asset(
+                spec,
+                asset_file_name=asset_name,
+                group_scales=scales,
+                coupled_knee="coupled",
+                repo_root=_REPO,
+                bone_meshes=True,
+                collision_geoms=geoms,
+            )
+            n_box = sum(1 for g in geoms if g.kind == "box")
+            n_sph = sum(1 for g in geoms if g.kind == "sphere")
+            print(f"wrote {scheme} collision asset -> {path} "
+                  f"({n_sph} spheres, {n_box} boxes)")
+    else:
+        print("NOTE: static trial unavailable; skipping foot collision variants.")
 
     _MOTION_OUT.parent.mkdir(parents=True, exist_ok=True)
     torch.save(clip.data, str(_MOTION_OUT))
