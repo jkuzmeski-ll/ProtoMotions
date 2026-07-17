@@ -274,3 +274,61 @@ def test_bone_meshes_scaled_and_load():
     m = mj.MjModel.from_xml_string(res.xml)
     assert m.nmesh == res.xml.count("<mesh ")
     assert m.ngeom == m.nmesh  # all geoms are meshes in this variant
+
+
+def test_collision_geoms_emit_and_load():
+    """``collision_geoms`` add colliding foot geoms without changing FK/qpos."""
+    import numpy as np
+
+    from biomech.export.foot_collision import CollisionGeom
+    from biomech.export.mjcf import export_mjcf
+
+    spec = _spec()
+    geoms = [
+        CollisionGeom("calcn_r", "box", np.array([0.09, -0.01, 0.0]),
+                      np.array([0.1, 0.02, 0.04]), "col_calcn_r_box"),
+        CollisionGeom("toes_r", "sphere", np.array([0.03, -0.01, 0.0]),
+                      np.array([0.02]), "col_toes_r_sph"),
+    ]
+    base = export_mjcf(spec, coupled_knee="coupled")
+    res = export_mjcf(spec, coupled_knee="coupled", collision_geoms=geoms)
+    # colliding geoms present with contact enabled; do not add bodies/DOFs
+    assert 'name="col_calcn_r_box"' in res.xml and 'name="col_toes_r_sph"' in res.xml
+    assert 'contype="1" conaffinity="1"' in res.xml
+    assert res.body_names == base.body_names
+    assert res.qpos_dim == base.qpos_dim
+
+    mj = _require_mujoco()
+    m = mj.MjModel.from_xml_string(res.xml)
+    # exactly the two collision geoms have contact enabled (visual geoms stay off)
+    assert int((m.geom_contype != 0).sum()) == 2
+    for name, kind in (("col_calcn_r_box", mj.mjtGeom.mjGEOM_BOX),
+                       ("col_toes_r_sph", mj.mjtGeom.mjGEOM_SPHERE)):
+        gid = mj.mj_name2id(m, mj.mjtObj.mjOBJ_GEOM, name)
+        assert gid >= 0 and m.geom_type[gid] == kind and m.geom_contype[gid] != 0
+
+
+def test_foot_collision_schemes():
+    """Both foot-collision schemes build subject-sized colliding foot geoms that load."""
+    from biomech.export.foot_collision import foot_collision_geoms
+    from biomech.export.mjcf import export_mjcf
+    from biomech.session import load_session
+    from biomech.tests import CAL_C3D, require
+
+    spec = _spec()
+    session = load_session(str(require(CAL_C3D)), filter_cutoff_hz=None)
+    mj = _require_mujoco()
+    foot_bodies = {"calcn_r", "toes_r", "calcn_l", "toes_l"}
+
+    # spheres: several per foot body (OpenSim-style); boxes: one per foot body.
+    sph = foot_collision_geoms(spec, None, "spheres", session)
+    box = foot_collision_geoms(spec, None, "boxes", session)
+    assert all(g.kind == "sphere" for g in sph) and len(sph) > 4
+    assert all(g.kind == "box" for g in box)
+    assert {g.body for g in box} <= foot_bodies
+    assert len(box) == len({g.body for g in box})  # exactly one box per foot body
+
+    for geoms in (sph, box):
+        res = export_mjcf(spec, collision_geoms=geoms)
+        m = mj.MjModel.from_xml_string(res.xml)
+        assert int((m.geom_contype != 0).sum()) == len(geoms)

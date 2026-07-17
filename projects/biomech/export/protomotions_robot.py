@@ -81,6 +81,7 @@ def write_biomech_asset(
     visual_geoms: bool = True,
     subject_mass: Optional[float] = None,
     bone_meshes: bool = False,
+    collision_geoms: Optional[list] = None,
 ) -> Path:
     """Export the fitted skeleton MJCF into the ProtoMotions asset tree.
 
@@ -92,6 +93,8 @@ def write_biomech_asset(
     ``<asset_root>/mesh/biomech_rajagopal/`` -- see ``tools/convert_bone_meshes.py``).
     ``subject_mass`` (kg), if given, rescales body masses/inertias so the robot's whole-body
     mass matches the subject (anthropometric mass on top of ``group_scales`` geometry).
+    ``collision_geoms`` (optional), if given, adds colliding foot-ground geoms (see
+    :mod:`biomech.export.foot_collision`) so a physically simulated character makes contact.
     """
     from biomech.export.mjcf import export_mjcf
 
@@ -121,6 +124,7 @@ def write_biomech_asset(
         visual_geoms=visual_geoms,
         subject_mass=subject_mass,
         bone_meshes=mesh_map,
+        collision_geoms=collision_geoms,
     )
     root = Path(repo_root) if repo_root is not None else Path.cwd()
     out = root / asset_root / asset_file_name

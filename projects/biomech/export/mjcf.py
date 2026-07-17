@@ -279,6 +279,7 @@ def export_mjcf(
     subject_mass: Optional[float] = None,
     bone_meshes: Optional[dict[str, list[BoneMesh]]] = None,
     meshdir: str = MESHDIR_REL,
+    collision_geoms: Optional[list] = None,
 ) -> MjcfExportResult:
     """Build an MJCF string for the Newton MuJoCo solver from a fitted skeleton.
 
@@ -300,6 +301,12 @@ def export_mjcf(
     written to ``<compiler meshdir=...>``. Bodies without a bone mesh fall back to the
     capsule/sphere placeholder when ``visual_geoms`` is set. Meshes are visual-only
     (``density=0`` + ``contype/conaffinity=0``), so FK/dynamics are unchanged.
+
+    ``collision_geoms``: optional list of :class:`biomech.export.foot_collision.CollisionGeom`
+    attached to their bodies as *colliding* geoms (``contype/conaffinity=1``, ``density=0``).
+    The visual bone meshes/capsules stay non-colliding; these add the foot-ground contact
+    a physically simulated character needs. Since they are density-0 on bodies with an
+    explicit ``<inertial>``, FK/dynamics are unchanged.
 
     ``subject_mass``: if given (kg), rescale the model's segment masses so the whole-body
     mass equals the subject's measured mass (e.g. from the Plug-in-Gait ``.mp``), preserving
@@ -476,6 +483,24 @@ def export_mjcf(
                 )
             lines.append(f"{indent}<geom {attrs} {style}/>")
 
+    # Colliding foot geoms grouped by body (visual geoms stay non-colliding).
+    collision_by_body: dict[str, list] = {}
+    for g in collision_geoms or []:
+        collision_by_body.setdefault(g.body, []).append(g)
+
+    def _emit_collision(body_name: str, indent: str):
+        """Colliding foot-ground geoms (contype/conaffinity=1, density=0)."""
+        for g in collision_by_body.get(body_name, []):
+            if g.kind == "box":
+                shape = f'type="box" size="{_fmt(g.size)}"'
+            else:
+                shape = f'type="sphere" size="{repr(float(np.asarray(g.size).ravel()[0]))}"'
+            lines.append(
+                f'{indent}<geom name="{g.name}" {shape} pos="{_fmt(g.pos)}" '
+                'group="3" contype="1" conaffinity="1" density="0" '
+                'friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>'
+            )
+
     def _emit_joint(d: _MjJoint, indent: str):
         joint_names.append(d.name)
         attrs = (
@@ -539,6 +564,7 @@ def export_mjcf(
             _emit_payload(body_name, indent + "  ")
             _emit_geoms(body_name, indent + "  ")
             _emit_mesh_geoms(body_name, indent + "  ")
+            _emit_collision(body_name, indent + "  ")
             for child in children.get(body_name, []):
                 write_body(child, indent + "  ")
             lines.append(f"{indent}</body>")
@@ -578,6 +604,7 @@ def export_mjcf(
         _emit_payload(body_name, cur + "  ")
         _emit_geoms(body_name, cur + "  ")
         _emit_mesh_geoms(body_name, cur + "  ")
+        _emit_collision(body_name, cur + "  ")
         for child in children.get(body_name, []):
             write_body(child, cur + "  ")
         lines.append(f"{cur}</body>")
