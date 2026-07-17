@@ -393,6 +393,26 @@ biomech/
   goldens. Pre-existing stale tests (unrelated): `test_protomotions_bridge` asserts
   `number_of_actions==31` but the MTP unlock made it 33 (fails on HEAD before this work).
 
+- **Foot-ground collision geometry DONE** (`export/foot_collision.py`, wired through
+  `export/mjcf.py::export_mjcf(collision_geoms=...)` +
+  `export/protomotions_robot.py::write_biomech_asset(collision_geoms=...)`). The bone
+  meshes are visual-only (`contype/conaffinity=0`), so a physically simulated mimic
+  character had NO foot-ground contact. Two comparable variants are exported by
+  `tools/export_s001_subject.py` (same skeleton/FK/inertia + the shared `.motion`, so one
+  clip drives both): `mjcf/biomech_rajagopal_spheres.xml` (OpenSim-style: 6 spheres/foot =
+  4 on `calcn` + 2 on `toes`) and `mjcf/biomech_rajagopal_boxes.xml` (ProtoMotions-style:
+  1 box per foot body). Both are sized to the subject's real plantar sole
+  (`subject_sole_from_session`, calcn body frame) so the contact surface coincides with
+  the ground-registration datum; the forefoot/toe share is split onto the articulating
+  `toes` body at the MTP so push-off contact follows MTP flexion. Geoms are `density=0`
+  (bodies keep explicit `<inertial>`, so FK/dynamics unchanged) with `contype/conaffinity=1`
+  to hit the terrain floor. Verified with `tools/check_foot_collision.py`: during measured
+  right stance the collision surface reaches the floor (spheres calcn ~-0.2 mm / toes
+  ~+3.5 mm; boxes calcn ~-2.5 mm / toes ~-3.6 mm) and clears ~9-11 cm in swing -- vs the
+  original 3-7 cm float. TODO: wire a `--foot-collision {spheres,boxes}` choice into the
+  biomech `RobotConfig`/`experiments/mimic_newton.py`, and confirm ProtoMotions'
+  `self_collisions=False` doesn't strip the foot contype/conaffinity in-sim.
+
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
   0.986x weight) + per-foot GRF, (2) Z-up skeleton standing on the registered ground,
