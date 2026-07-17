@@ -370,6 +370,29 @@ biomech/
   via the pickled spec. Regenerated asset/motion/figs (fig 10 median RMS now 8.6 mm).
   `test_pipeline_real_s001` still passes.
 
+- **Exported-clip ground registration DONE + belt-side bug found** (`export/
+  protomotions_robot.py::register_clip_to_ground`, wired into
+  `tools/export_s001_subject.py`). The exported `.motion` previously kept the raw
+  shod-treadmill capture height, so the bare bone skeleton floated ~3-7 cm above the sim
+  floor (the "calcaneus never hits the ground / never dorsiflexes" report). Diagnosed with
+  `tools/check_foot_ground.py` + `tools/render_foot_bone_check.py`: the reconstruction is
+  faithful (markers RMS ~8 mm; the real foot DOES heel-strike + dorsiflex ~+8 deg) and the
+  mesh sits correctly on the bone (calcaneus ~15 mm above the plantar heel markers = heel
+  pad). It was purely a missing vertical datum. Fix reuses the validated contact stack:
+  subject plantar sole (`subject_sole_from_session`) + flat-foot ground registration
+  (`register_ground_flatfoot`), dropping the clip onto the mean flat-foot plane of the two
+  feet so during stance the sole rests on z=0 (verified: stance sole median ~0, swing foot
+  clears to +3..6 cm; residual ~2 cm in-stance penetration is the known cm-scale roll
+  error, not the datum). **Belt->foot assignment is FLIPPED for S001**: with the pipeline
+  default `right_plate_x_sign=1` the right heel is HIGHER during "stance" than "swing"
+  (backwards); `-1` is correct. `register_clip_to_ground` auto-detects the sign (picks the
+  one where each foot's sole is lower while its belt is loaded). NOTE/TODO: the wider
+  pipeline (`run_subject_pipeline`, cache `grf_R/grf_L`, fig 9 GRF shading, contact
+  calibration) still uses the default sign=1 -> its R/L GRF are likely swapped; needs an
+  audit (may explain any GRF/leg phase oddities) but was left untouched to avoid churning
+  goldens. Pre-existing stale tests (unrelated): `test_protomotions_bridge` asserts
+  `number_of_actions==31` but the MTP unlock made it 33 (fails on HEAD before this work).
+
 - **Correctness figures DONE** (`tools/make_tracking_figures.py` -> `docs/figures/`):
   5 figures, all viewed & verified: (1) body-weight invariant convergence (tail mean
   0.986x weight) + per-foot GRF, (2) Z-up skeleton standing on the registered ground,

@@ -230,6 +230,100 @@ def build_simbody_motion(
     )
 
 
+def register_clip_to_ground(
+    clip: MotionExportResult,
+    spec,
+    static_session,
+    trial_session,
+    window: tuple,
+    group_scales: Optional[np.ndarray] = None,
+    fz_threshold: float = 50.0,
+    right_plate_x_sign: Optional[int] = None,
+    penetration: float = 0.0,
+) -> float:
+    """Ground-register a Z-up sim-body clip onto the physically-validated contact plane.
+
+    Reuses the calibrated contact machinery (the same registration that drove the
+    hydroelastic GRF fit to ~1% on this walk): build the subject's plantar sole from the
+    static trial, extract each foot's world trajectory from the clip, and register the
+    ground from genuinely *flat-foot* frames (planted, near-horizontal, low vertical
+    speed, high measured load) via the median lowest sole point. Both feet are registered
+    independently and the clip is dropped onto their mean plane (a split-belt treadmill's
+    two belts are at the same physical height), so during stance the subject's sole rests
+    on the sim floor (z=0) with neither float nor penetration -- the correct vertical
+    datum for a physically-plausible mimic reference. Returns the applied z shift (m).
+
+    ``right_plate_x_sign`` selects which force plate is the right foot; when ``None`` it is
+    auto-detected (the assignment under which each foot's sole is lower while loaded than
+    unloaded), since the default lab convention is flipped for some captures (e.g. S001).
+    A constant z-shift leaves rotations and velocities untouched.
+    """
+    from biomech.contact.foot_geometry import subject_sole_from_session
+    from biomech.contact.kinematics import foot_trajectory_from_motion
+    from biomech.contact.pipeline import measured_belt_grf
+    from biomech.contact.stance import (
+        flat_foot_mask,
+        register_ground_flatfoot,
+        sole_world_z,
+    )
+
+    lo, hi = window
+    # Pre-compute each foot's sole trajectory + lowest-point-per-frame once.
+    soles, trajs, pfmin = {}, {}, {}
+    for side, body in (("R", "calcn_r"), ("L", "calcn_l")):
+        if body not in clip.body_names:
+            continue
+        sole = subject_sole_from_session(
+            static_session, spec, side, group_scales=group_scales
+        )
+        pos, quat, linvel, _ = foot_trajectory_from_motion(clip, body)
+        soles[side] = sole
+        trajs[side] = (pos, quat, linvel)
+        pfmin[side] = np.min(sole_world_z(sole, pos, quat), axis=1)
+
+    # Auto-detect the belt->foot assignment: the correct sign is the one where each
+    # foot's sole sits LOWER while its belt reports load than while it doesn't (planted
+    # in stance, lifted in swing). The default lab convention is wrong for some captures
+    # (e.g. S001), which would otherwise gate registration on the opposite foot.
+    def _score(sign: int) -> float:
+        belt = measured_belt_grf(trial_session, sign)
+        s = 0.0
+        for side in soles:
+            if side not in belt:
+                continue
+            fz = np.asarray(belt[side][0])[lo:hi, 2]
+            st = fz > fz_threshold
+            if st.any() and (~st).any():
+                s += float(np.mean(pfmin[side][~st]) - np.mean(pfmin[side][st]))
+        return s  # >0 when loaded frames are lower than unloaded (correct assignment)
+
+    if right_plate_x_sign is None:
+        right_plate_x_sign = 1 if _score(1) >= _score(-1) else -1
+    belt = measured_belt_grf(trial_session, right_plate_x_sign)
+
+    planes = []
+    for side in soles:
+        sole = soles[side]
+        pos, quat, linvel = trajs[side]
+        fz = stance = None
+        if side in belt:
+            fz = np.asarray(belt[side][0])[lo:hi, 2]
+            stance = fz > fz_threshold
+        flat = flat_foot_mask(
+            sole, pos, quat, linvel=linvel, fz=fz, fz_threshold=fz_threshold
+        )
+        planes.append(
+            register_ground_flatfoot(
+                sole, pos, quat, flat, penetration=penetration, fallback=stance
+            )
+        )
+    if not planes:
+        return 0.0
+    ground = float(np.mean(planes))
+    clip.data["rigid_body_pos"][..., 2] -= ground
+    return ground
+
+
 # ---------------------------------------------------------------------------
 # 3. RobotConfig
 # ---------------------------------------------------------------------------

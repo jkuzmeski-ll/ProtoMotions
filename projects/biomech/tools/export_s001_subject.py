@@ -31,11 +31,13 @@ import torch  # noqa: E402
 
 from biomech.export.protomotions_robot import (  # noqa: E402
     build_simbody_motion,
+    register_clip_to_ground,
     write_biomech_asset,
 )
 from biomech.osim import parse_osim  # noqa: E402
 from biomech.session import load_session  # noqa: E402
 from biomech.tests import (  # noqa: E402
+    CAL_C3D,
     LEFT_BELT,
     RIGHT_BELT,
     SPEEDCHANGE,
@@ -122,6 +124,28 @@ def main() -> int:
         spec, poses, fps=fps, group_scales=scales, coupled_knee="coupled",
         belt_speed=belt_speed,
     )
+
+    # 2b. Ground registration (physiological/physical correctness for mimic training):
+    #     the raw fit keeps the shod-treadmill capture height, so the subject floats/
+    #     penetrates relative to the sim floor. Drop the clip onto the same
+    #     flat-foot contact plane the validated hydroelastic GRF calibration used, so
+    #     during stance the subject's plantar sole rests on z=0 (no float, no
+    #     penetration). Uses the static trial (sole geometry) + measured belt GRF.
+    if Path(CAL_C3D).exists() and Path(TRIAL_C3D).exists() and Path(LEFT_BELT).exists():
+        static_session = load_session(str(CAL_C3D), filter_cutoff_hz=None)
+        trial_session = load_session(
+            str(TRIAL_C3D), left_belt_path=str(LEFT_BELT),
+            right_belt_path=str(RIGHT_BELT), speedchange_path=str(SPEEDCHANGE),
+        )
+        ground = register_clip_to_ground(
+            clip, spec, static_session, trial_session, window,
+            group_scales=scales,
+        )
+        print(f"  ground registration: dropped clip by {ground:.4f} m "
+              f"(stance sole now rests on z=0)")
+    else:
+        print("NOTE: static/belt trials unavailable; skipping ground registration.")
+
     _MOTION_OUT.parent.mkdir(parents=True, exist_ok=True)
     torch.save(clip.data, str(_MOTION_OUT))
     pelvis = clip.data["rigid_body_pos"][:, 0, :]
