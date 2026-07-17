@@ -155,6 +155,15 @@ def reconstruct():
         for m in range(d.shape[1])
     ])
 
+    # Foot-flat correction (post-hoc, ankle DOF only): the marker fit reconstructs each
+    # foot a constant ~14 deg toe-down even at the known foot-flat static pose (heel marker
+    # mounted high vs the offset prior). Marker RMS above is measured on the raw fit; now
+    # rotate each foot flat about its ankle so the delivered motion + all downstream figures
+    # plant the plantar sole in stance. Only the foot/toes rotate -- the rest of the chain
+    # and the MTP-relative geometry are unchanged (see marker_placement.compute_foot_flat_offset).
+    from biomech.fitting.marker_placement import apply_foot_flat_to_poses
+    poses = apply_foot_flat_to_poses(spec, poses, pl.foot_flat)
+
     motion = build_motion(spec, poses, fps=session.point_rate, group_scales=scales)
     # Auto-detect which force plate is the right foot (S001's right foot is on the -x
     # plate; the default sign=+1 would swap R/L GRF). Robust to lab/capture convention.

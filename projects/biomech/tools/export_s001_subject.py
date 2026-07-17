@@ -79,36 +79,6 @@ def _load_belt_speed(window: tuple[int, int]) -> np.ndarray | None:
     return belt
 
 
-def _get_foot_flat(cache, spec, scales) -> dict:
-    """Foot-flat ankle corrections (radians) from the cache, or computed fresh.
-
-    Prefers the value stored by ``make_s001_ik_figures`` (the fitted subject's calibration).
-    For older caches without it, recompute from a fresh static placement fit so the export
-    is self-contained. Returns ``{ankle_coord: dq_radians}`` (empty if unavailable).
-    """
-    if "foot_flat" in cache.files:
-        val = cache["foot_flat"].item()
-        if val:
-            return dict(val)
-    if not Path(CAL_C3D).exists():
-        return {}
-    print("  computing foot-flat correction from a fresh static fit (cache lacked it) ...")
-    from biomech.fitting.cluster_collapse import collapse_clusters
-    from biomech.fitting.marker_fitter import MarkerFitConfig
-    from biomech.fitting.marker_map import s001_marker_map
-    from biomech.fitting.marker_placement import place_foot_markers
-
-    static = load_session(str(CAL_C3D), filter_cutoff_hz=None)
-    spec_s = parse_osim(str(_OSIM))
-    mm, _ = collapse_clusters(spec_s, s001_marker_map())
-    n = min(60, int(np.asarray(static.markers).shape[0]))
-    pl = place_foot_markers(
-        spec_s, static, mapping=mm, marker_config=MarkerFitConfig(outer_iters=6),
-        device="cpu", frame_range=(0, n), register_neutral=False,
-    )
-    return dict(pl.foot_flat or {})
-
-
 def main() -> int:
     if not _CACHE.exists():
         print(f"ERROR: S001 fit cache missing: {_CACHE}")
@@ -132,24 +102,9 @@ def main() -> int:
     print(f"S001 fit: {poses.shape[0]} frames @ {fps} fps, "
           f"{poses.shape[1]} DOFs, {scales.shape[0]} group-scale components")
 
-    # Foot-flat correction: the marker fit reconstructs the calcn a constant ~14 deg
-    # toe-down even at the (known foot-flat) static pose -- the high-mounted heel marker
-    # vs the offset prior rotates the bone heel-up/toe-down, and that constant is frozen
-    # into every dynamic frame (heel floats / forefoot penetrates in stance). Remove it by
-    # rotating each foot flat about its ankle DOF ONLY: because the ankle is the leaf-side
-    # joint, pelvis/hip/knee/shank (q upstream) are untouched; the real gait plantar/
-    # dorsiflexion (frame-to-frame ankle motion) is preserved exactly.
-    foot_flat = _get_foot_flat(cache, spec, scales)
-    if foot_flat:
-        dof = spec.dof_index_map()
-        applied = {}
-        for coord, dq in foot_flat.items():
-            if coord in dof:
-                poses[:, dof[coord]] += dq
-                applied[coord] = round(dq * 180.0 / np.pi, 2)
-        print(f"  foot-flat correction (deg) applied to ankle DOFs: {applied}")
-    else:
-        print("NOTE: no foot-flat correction available (foot stays as fitted).")
+    # Foot-flat correction is already applied to the cached poses (make_s001_ik_figures
+    # rotates each foot flat about its ankle DOF after the fit), so the plantar sole is
+    # planted in stance -- no export-time edit needed.
 
     # Belt speed (ground truth for treadmill-to-overground mapping) over the exact
     # window the clip covers. Split-belt: use the mean of the two belts as the
