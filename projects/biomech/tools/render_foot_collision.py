@@ -98,12 +98,12 @@ def main() -> int:
     schemes = {k: [g for g in v if g.body in _R_BODIES] for k, v in schemes.items()}
 
     from biomech.contact.elastic_foundation import _quat_rotate_np
+    from biomech.export.foot_collision import _sole_points, _toes_from_calcn
 
     def lowest_collision_z(geoms, fr, bodies=None):
         """World-z of the deepest point of any collision geom at frame ``fr``.
 
-        If ``bodies`` is given, only geoms on those bodies are considered (e.g. just the
-        calcaneus to find heel contact).
+        If ``bodies`` is given, only geoms on those bodies are considered.
         """
         zmin = np.inf
         for g in geoms:
@@ -126,26 +126,64 @@ def main() -> int:
 
     nframes = traj["calcn_r"][0].shape[0]
 
-    nrows, ncols = len(schemes), 3
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6.4 * ncols, 4.6 * nrows),
+    # --- scheme-independent gait-event detection from the plantar sole kinematics ---
+    # Split the subject sole at the MTP into rear (calcn frame) and toe (toes frame), and
+    # track, per frame, the world-z of a posterior-heel point, a distal-toe point, and the
+    # whole sole. The events are properties of the *motion*, so both collision schemes are
+    # rendered at the same frames (directly comparable).
+    sole = _sole_points(spec, scales, static, "R")
+    M = _toes_from_calcn(spec, scales, "toes_r")
+    R, t = M[:3, :3], M[:3, 3]
+    fore = sole[:, 0] >= float(t[0])
+    rear = sole[~fore]
+    toe = (sole[fore] - t) @ R
+    heel_pt = rear[int(np.argmin(rear[:, 0]))][None, :]          # posterior-most (calcn)
+    toe_pt = toe[int(np.argmax(toe[:, 0]))][None, :]             # distal-most (toes)
+
+    def _wz(body, pts_body, fr):
+        pos, quat = traj[body][0][fr], traj[body][1][fr]
+        q = np.broadcast_to(quat[None, :], (pts_body.shape[0], 4))
+        return pos[2] + _quat_rotate_np(q, pts_body)[:, 2]
+
+    heel_z = np.array([_wz("calcn_r", heel_pt, f)[0] for f in range(nframes)])
+    toe_z = np.array([_wz("toes_r", toe_pt, f)[0] for f in range(nframes)])
+    sole_z = np.array([min(_wz("calcn_r", rear, f).min(), _wz("toes_r", toe, f).min())
+                       for f in range(nframes)])
+
+    # Primary stance = the contiguous low-sole block around the deepest-contact frame.
+    thresh = float(sole_z.min()) + 0.02
+    i0 = int(np.argmin(sole_z))
+    s = i0
+    while s > 0 and sole_z[s - 1] < thresh:
+        s -= 1
+    e = i0
+    while e < nframes - 1 and sole_z[e + 1] < thresh:
+        e += 1
+    mid = (s + e) // 2
+    # Characteristic postures: heel strike = heel down / toe up (dorsiflexion); toe off =
+    # heel up / toe down (plantarflexion); midstance = both lowest (flat); swing = clearance.
+    hs = s + int(np.argmax((toe_z - heel_z)[s:mid + 1])) if mid > s else s
+    to = mid + int(np.argmax((heel_z - toe_z)[mid:e + 1])) if e > mid else e
+    ms = s + int(np.argmin((heel_z + toe_z)[s:e + 1]))
+    sw = int(np.argmax(sole_z))
+    events = [
+        (f"heel strike (frame {hs})", hs),
+        (f"midstance (frame {ms})", ms),
+        (f"toe off (frame {to})", to),
+        (f"mid swing (frame {sw})", sw),
+    ]
+
+    nrows, ncols = len(schemes), len(events)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.4 * ncols, 4.6 * nrows),
                              squeeze=False)
     for r, (sname, geoms) in enumerate(schemes.items()):
         by_body: dict = {}
         for g in geoms:
             by_body.setdefault(g.body, []).append(g)
-        # pick contact/clearance frames from this scheme's own lowest collision z
-        low_z = np.array([lowest_collision_z(geoms, f) for f in range(nframes)])
-        heel_z = np.array([lowest_collision_z(geoms, f, {"calcn_r"})
-                           for f in range(nframes)])
-        heel = int(np.argmin(heel_z))
-        stance = int(np.argmin(low_z))
-        swing = int(np.argmax(low_z))
-        frames = {
-            f"heel contact (frame {heel}, calcn {heel_z[heel]*1e3:+.1f}mm)": heel,
-            f"deepest contact (frame {stance}, {low_z[stance]*1e3:+.1f}mm)": stance,
-            f"swing / peak clearance (frame {swing}, {low_z[swing]*1e3:+.1f}mm)": swing,
-        }
-        for c, (ftitle, fr) in enumerate(frames.items()):
+        for c, (ename, fr) in enumerate(events):
+            gz = lowest_collision_z(geoms, fr)
+            ftitle = (f"{ename}\nlowest geom z = {gz*1e3:+.1f} mm  |  "
+                      f"heel z = {heel_z[fr]*1e3:+.1f} mm")
             ax = axes[r][c]
             # forward axis from the rearfoot for a consistent u origin
             cpos, cquat = traj["calcn_r"][0][fr], traj["calcn_r"][1][fr]
@@ -184,13 +222,15 @@ def main() -> int:
                                                  facecolor=(0.20, 0.80, 0.35, 0.35),
                                                  edgecolor=(0.05, 0.45, 0.15, 0.9), lw=1.2))
             ax.axhline(0.0, color="saddlebrown", lw=2, label="sim floor (z=0)")
-            ax.set_title(f"{sname}\n{ftitle}")
+            ax.set_title(f"{sname}\n{ftitle}", fontsize=9)
             ax.set_xlabel("forward (m)"); ax.set_ylabel("up z (m)")
             ax.set_aspect("equal"); ax.autoscale_view()
             ax.set_ylim(-0.05, 0.28)
             ax.legend(loc="upper right", fontsize=8)
-    fig.suptitle("S001 right foot: collision geometry vs sim floor "
-                 "(sole-registered clip); green = colliding foot geoms", fontsize=13)
+    fig.suptitle("S001 right foot: collision geometry vs sim floor (sole-registered clip); "
+                 "green = colliding foot geoms.  NOTE: posterior heel never reaches the "
+                 "floor (min ~+39 mm) -- the retargeted foot is forefoot-loaded, no heel "
+                 "strike.", fontsize=11)
     fig.tight_layout()
     fig.savefig(str(_OUT), dpi=120)
     print("wrote", _OUT)
