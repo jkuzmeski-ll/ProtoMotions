@@ -242,7 +242,7 @@ def _joint_dofs(
         else:
             comp = int(np.argmax(np.abs(a.axis)))
             axis = Rc @ _UNIT[comp]
-        rng = lim[a.coordinate] if indep else None
+        rng = lim[a.coordinate] if indep else _dependent_coord_range(a.function, lim[a.coordinate])
         dofs.append(
             _MjJoint(f"{joint.name}__{a.name}", kind, axis, tc, a.coordinate, indep, a.function, rng)
         )
@@ -651,6 +651,26 @@ def _coord_limits(joint: JointSpec, coord: str) -> tuple[float, float]:
         if c.name == coord:
             return c.limit_lo, c.limit_hi
     raise KeyError(coord)
+
+
+def _dependent_coord_range(func, coord_limits, n: int = 200) -> tuple[float, float]:
+    """Physiological joint range for an equality-coupled (dependent) DOF.
+
+    A dependent walker-knee DOF is driven by ``q_dep = func(q_indep)`` (the
+    ``<equality><joint>`` polycoef fit), so over the driving coordinate's range it only
+    ever visits ``[min, max]`` of ``func``. Emitting that as the MJCF joint ``range``
+    (instead of leaving it range-less, which ``extract_kinematic_info`` fills with +-1e10
+    and which then blows the PD action scale up to ~1e10) keeps the sim and the RL action
+    scaling physiological. ``func.value(0) == 0`` (zero rest config), and the driving
+    range starts at 0, so the returned interval always contains 0. A small margin absorbs
+    the polycoef fit residual so the limit never fights the equality constraint.
+    """
+    lo, hi = float(coord_limits[0]), float(coord_limits[1])
+    xs = np.linspace(lo, hi, n)
+    ys = np.array([func.value(float(x)) for x in xs], dtype=np.float64)
+    ylo, yhi = float(ys.min()), float(ys.max())
+    margin = max(0.05 * (yhi - ylo), 0.01)
+    return (ylo - margin, yhi + margin)
 
 
 def _fit_polycoef(func, lo: float, hi: float, n: int = 200) -> tuple[np.ndarray, float]:
