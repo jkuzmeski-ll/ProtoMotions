@@ -78,11 +78,25 @@ def _bbox(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return points.min(axis=0), points.max(axis=0)
 
 
-def _box_geom(points: np.ndarray, body: str, name: str, min_half: float = 0.006) -> CollisionGeom:
-    """A single box = AABB of ``points`` (flat-bottomed foot block for that body)."""
+def _box_geom(
+    points: np.ndarray, body: str, name: str, min_half: float = 0.006,
+    floor_y: Optional[float] = None,
+) -> CollisionGeom:
+    """A single box = AABB of ``points`` (flat-bottomed foot block for that body).
+
+    ``floor_y`` (in this body's frame), if given, forces the box's plantar (bottom) face
+    down to that level -- used to make the forefoot/toe box coplanar with the heel box's
+    bottom (the whole sole shares one ground-contact plane at a flat foot) instead of
+    floating on the shallower local toe-region minimum.
+    """
     lo, hi = _bbox(points)
     center = 0.5 * (lo + hi)
     half = np.maximum(0.5 * (hi - lo), min_half)
+    if floor_y is not None:
+        top = center[1] + half[1]
+        bottom = min(float(floor_y), float(lo[1]))
+        center[1] = 0.5 * (top + bottom)
+        half[1] = 0.5 * (top - bottom)
     return CollisionGeom(body=body, kind="box", pos=center, size=half, name=name)
 
 
@@ -104,16 +118,18 @@ def _radius_for(points: np.ndarray, frac: float, lo: float, hi: float) -> float:
 
 
 def _quadrant_spheres(
-    points: np.ndarray, body: str, prefix: str, radius: float
+    points: np.ndarray, body: str, prefix: str, radius: float,
+    y_plane: Optional[float] = None,
 ) -> list[CollisionGeom]:
     """Four spheres near the plantar footprint corners (heel/ball x medial/lateral).
 
-    All rest on the region's deepest plantar level (a common contact plane, as OpenSim
-    contact spheres are laid out), and sit at the footprint edges (inset by the radius)
-    so a sphere is under the posterior heel and the metatarsal heads -- making heel-strike
-    and push-off contact the floor together.
+    All rest on the shared plantar contact plane ``y_plane`` (defaults to this region's
+    deepest plantar level, as OpenSim contact spheres are laid out), and sit at the
+    footprint edges (inset by the radius) so a sphere is under the posterior heel and the
+    metatarsal heads -- making heel-strike and push-off contact the floor together.
     """
-    y_plane = float(points[:, 1].min())
+    if y_plane is None:
+        y_plane = float(points[:, 1].min())
     x0, x1 = float(points[:, 0].min()), float(points[:, 0].max())
     z0, z1 = float(points[:, 2].min()), float(points[:, 2].max())
     out: list[CollisionGeom] = []
@@ -126,10 +142,12 @@ def _quadrant_spheres(
 
 
 def _pair_spheres(
-    points: np.ndarray, body: str, prefix: str, radius: float
+    points: np.ndarray, body: str, prefix: str, radius: float,
+    y_plane: Optional[float] = None,
 ) -> list[CollisionGeom]:
     """Two spheres at the distal toe footprint, split medial/lateral, on one plane."""
-    y_plane = float(points[:, 1].min())
+    if y_plane is None:
+        y_plane = float(points[:, 1].min())
     x1 = float(points[:, 0].max())
     z0, z1 = float(points[:, 2].min()), float(points[:, 2].max())
     out: list[CollisionGeom] = []
@@ -157,19 +175,29 @@ def _side_geoms(
     # calcn-frame -> toes-frame: p_toes = R^T (p_calcn - t)
     toe_pts = (toe_pts_calcn - t) @ R if toe_pts_calcn.shape[0] else toe_pts_calcn
 
+    # Shared ground-contact plane = the whole sole's deepest plantar level (the heel, in
+    # the calcn frame). Express it in the toes frame too so the articulating forefoot/toe
+    # geoms are coplanar with the heel at a flat foot instead of floating on the shallower
+    # local toe-region minimum (the toe pads roll onto the same floor at midstance).
+    y_floor = float(pts[:, 1].min())
+    deepest_calcn = pts[int(np.argmin(pts[:, 1]))]
+    y_floor_toes = float(((deepest_calcn - t) @ R)[1])
+
     geoms: list[CollisionGeom] = []
     if scheme == "boxes":
         if rear_pts.shape[0]:
-            geoms.append(_box_geom(rear_pts, calcn, f"col_{calcn}_box"))
+            geoms.append(_box_geom(rear_pts, calcn, f"col_{calcn}_box", floor_y=y_floor))
         if toe_pts.shape[0]:
-            geoms.append(_box_geom(toe_pts, toes, f"col_{toes}_box"))
+            geoms.append(
+                _box_geom(toe_pts, toes, f"col_{toes}_box", floor_y=y_floor_toes)
+            )
     elif scheme == "spheres":
         if rear_pts.shape[0]:
             r = _radius_for(rear_pts, frac=0.28, lo=0.012, hi=0.022)
-            geoms += _quadrant_spheres(rear_pts, calcn, f"col_{calcn}", r)
+            geoms += _quadrant_spheres(rear_pts, calcn, f"col_{calcn}", r, y_plane=y_floor)
         if toe_pts.shape[0]:
             r = _radius_for(toe_pts, frac=0.28, lo=0.010, hi=0.018)
-            geoms += _pair_spheres(toe_pts, toes, f"col_{toes}", r)
+            geoms += _pair_spheres(toe_pts, toes, f"col_{toes}", r, y_plane=y_floor_toes)
     else:  # pragma: no cover - guarded by caller
         raise ValueError(f"unknown foot collision scheme: {scheme!r}")
     return geoms

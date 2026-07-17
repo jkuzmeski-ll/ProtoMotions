@@ -157,8 +157,8 @@
                             <inertial pos="0.03168110549809604 0.006399427354693156 -0.013982053989762414" mass="0.2166" fullinertia="8.87967226604907e-05 0.0001476754845347798 0.0009879843757355212 0.0 0.0 0.0"/>
                             <site name="mk_RTOE_TIP" pos="0.05917332758596492 0.051938623374507845 -0.03713953252940549" size="0.01" group="4"/>
                             <geom type="mesh" mesh="r_bofoot" group="1" contype="0" conaffinity="0" density="0" rgba="0.90 0.88 0.80 1"/>
-                            <geom name="col_toes_r_lat" type="sphere" size="0.018" pos="0.039520657773573484 0.01718368601678293 -0.04291011823236597" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                            <geom name="col_toes_r_med" type="sphere" size="0.018" pos="0.039520657773573484 0.01718368601678293 0.0007658000069482376" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_r_lat" type="sphere" size="0.018" pos="0.039520657773573484 -0.0025498370801146086 -0.04291011823236597" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_r_med" type="sphere" size="0.018" pos="0.039520657773573484 -0.0025498370801146086 0.0007658000069482376" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
                           </body>
                         </body>
                       </body>
@@ -235,8 +235,8 @@
                             <inertial pos="0.03144659897319225 0.0065140704519369794 0.014078907688145409" mass="0.2166" fullinertia="9.129661777009994e-05 0.00014732635055891952 0.0010023631821157774 0.0 0.0 0.0"/>
                             <site name="mk_LTOE_TIP" pos="0.06243648504077278 0.055110131340670894 0.029962371602407223" size="0.01" group="4"/>
                             <geom type="mesh" mesh="l_bofoot" group="1" contype="0" conaffinity="0" density="0" rgba="0.90 0.88 0.80 1"/>
-                            <geom name="col_toes_l_lat" type="sphere" size="0.018" pos="0.04426417371258286 0.01790623025379951 -0.004238244398512874" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
-                            <geom name="col_toes_l_med" type="sphere" size="0.018" pos="0.04426417371258286 0.01790623025379951 0.04272399468516787" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_l_lat" type="sphere" size="0.018" pos="0.04426417371258286 0.0017743853205983082 -0.004238244398512874" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
+                            <geom name="col_toes_l_med" type="sphere" size="0.018" pos="0.04426417371258286 0.0017743853205983082 0.04272399468516787" group="3" contype="1" conaffinity="1" density="0" friction="1.0 0.005 0.0001" rgba="0.20 0.80 0.35 0.45"/>
                           </body>
                         </body>
                       </body>
