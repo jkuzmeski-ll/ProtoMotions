@@ -79,6 +79,7 @@ def test_simbody_motion_aligns_with_kinematic_info():
         ki = extract_kinematic_info(str(p))
 
     assert clip.body_names == ki.body_names, (len(clip.body_names), len(ki.body_names))
+    assert clip.dof_names == ki.dof_names
     assert clip.data["rigid_body_pos"].shape == (5, len(ki.body_names), 3)
 
 
@@ -272,7 +273,12 @@ def test_foot_collision_switch_selects_asset():
 
     args = argparse.Namespace(motion_file=None, batch_size=1024, training_max_steps=1000)
     saved_argv = sys.argv
-    saved_env = os.environ.pop("BIOMECH_FOOT_COLLISION", None)
+    env_keys = (
+        "BIOMECH_FOOT_COLLISION",
+        "BIOMECH_ASSET_ROOT",
+        "BIOMECH_ASSET_STEM",
+    )
+    saved_env = {key: os.environ.pop(key, None) for key in env_keys}
     try:
         # --- argv-based selection (env var cleared) ---
         # explicit selection
@@ -299,17 +305,26 @@ def test_foot_collision_switch_selects_asset():
         exp.configure_robot_and_simulator(cfg, None, args)
         assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal_spheres.xml"
 
+        # A generated bundle can be selected without overwriting the default asset.
+        os.environ["BIOMECH_ASSET_ROOT"] = "generated/assets"
+        os.environ["BIOMECH_ASSET_STEM"] = "biomech_s001_deadbeef"
+        cfg = robot_config("biomech")
+        exp.configure_robot_and_simulator(cfg, None, args)
+        assert cfg.asset.asset_root == "generated/assets"
+        assert cfg.asset.asset_file_name == "mjcf/biomech_s001_deadbeef_spheres.xml"
+
         # argv still overrides the env var (forward-compat)
         sys.argv = ["train_agent.py", "--foot-collision=none"]
         cfg = robot_config("biomech")
         exp.configure_robot_and_simulator(cfg, None, args)
-        assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal.xml"
+        assert cfg.asset.asset_file_name == "mjcf/biomech_s001_deadbeef.xml"
     finally:
         sys.argv = saved_argv
-        if saved_env is None:
-            os.environ.pop("BIOMECH_FOOT_COLLISION", None)
-        else:
-            os.environ["BIOMECH_FOOT_COLLISION"] = saved_env
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def test_foot_contacts_from_clip_gated_by_grf():

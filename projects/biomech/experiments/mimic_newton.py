@@ -31,15 +31,15 @@ Usage
         --experiment-path projects/biomech/experiments/mimic_newton.py \
         --experiment-name biomech_mimic_newton \
         --motion-file path/to/biomech_clip.motion \
-        --foot-collision boxes \
         --num-envs 4096 --batch-size 16384 --ngpu 1
 
 The env/agent wiring mirrors `examples/experiments/mimic/mlp.py`; only the robot and
-simulator defaults differ. ``--foot-collision {none,spheres,boxes}`` (default ``boxes``)
-selects which foot-ground collision asset the simulator loads (all variants share one
-``.motion`` clip; see ``projects/biomech/export/foot_collision.py``). Control gains are a
-uniform PD starting point (see `protomotions/robot_configs/biomech.py`) and should be
-tuned against measured GRF.
+simulator defaults differ. Set ``BIOMECH_FOOT_COLLISION`` to ``none``, ``spheres``, or
+``boxes`` (default) to select the collision asset. Unified pipeline bundles can also set
+``BIOMECH_ASSET_ROOT`` and ``BIOMECH_ASSET_STEM`` to select a subject-specific asset
+without overwriting the repository's default Rajagopal asset. Control gains are a uniform
+PD starting point (see `protomotions/robot_configs/biomech.py`) and should be tuned against
+measured GRF.
 """
 
 import argparse
@@ -61,12 +61,13 @@ from protomotions.simulator.base_simulator.config import SimulatorConfig
 #   none    -- no foot colliders (character falls through the floor; visual only)
 #   spheres -- OpenSim-style discrete plantar contact spheres (several per foot body)
 #   boxes   -- ProtoMotions-style single AABB box per foot body
-_FOOT_COLLISION_ASSETS = {
-    "none": "mjcf/biomech_rajagopal.xml",
-    "spheres": "mjcf/biomech_rajagopal_spheres.xml",
-    "boxes": "mjcf/biomech_rajagopal_boxes.xml",
+_FOOT_COLLISION_SUFFIXES = {
+    "none": "",
+    "spheres": "_spheres",
+    "boxes": "_boxes",
 }
 _DEFAULT_FOOT_COLLISION = "boxes"
+_DEFAULT_ASSET_STEM = "biomech_rajagopal"
 
 
 def _foot_collision_choice() -> str:
@@ -90,11 +91,22 @@ def _foot_collision_choice() -> str:
             choice = argv[i + 1]
         elif a.startswith("--foot-collision="):
             choice = a.split("=", 1)[1]
-    if choice not in _FOOT_COLLISION_ASSETS:
+    if choice not in _FOOT_COLLISION_SUFFIXES:
         raise ValueError(
-            f"foot-collision must be one of {sorted(_FOOT_COLLISION_ASSETS)}, got {choice!r}"
+            f"foot-collision must be one of {sorted(_FOOT_COLLISION_SUFFIXES)}, got {choice!r}"
         )
     return choice
+
+
+def _asset_file_name(choice: str) -> str:
+    """Asset path for the selected subject bundle and collision variant."""
+    stem = os.environ.get("BIOMECH_ASSET_STEM", _DEFAULT_ASSET_STEM)
+    if not stem or stem != os.path.basename(stem) or stem.endswith(".xml"):
+        raise ValueError(
+            "BIOMECH_ASSET_STEM must be a file stem without directories or .xml, "
+            f"got {stem!r}"
+        )
+    return f"mjcf/{stem}{_FOOT_COLLISION_SUFFIXES[choice]}.xml"
 
 
 def terrain_config(args: argparse.Namespace):
@@ -256,17 +268,23 @@ def configure_robot_and_simulator(
 ):
     """Select the foot-collision asset variant and add foot contact sensors.
 
-    ``--foot-collision {none,spheres,boxes}`` (default ``boxes``) picks which MJCF the
-    simulator loads. All variants share the fitted skeleton's topology/FK/inertia and DOF
-    set, so the ``kinematic_info``/``control_info`` already extracted from the default
-    asset stay valid -- only the colliding foot geoms differ. Newton's MJCF importer routes
-    geoms with ``contype/conaffinity=0`` to visuals and ``=1`` to colliders (independent of
-    ``self_collisions``, which only governs robot self-pairs), so the foot geoms collide
-    with the ground plane while the visual bones do not.
+    ``BIOMECH_FOOT_COLLISION`` picks which MJCF the simulator loads. Unified pipeline
+    bundles may set ``BIOMECH_ASSET_ROOT`` and ``BIOMECH_ASSET_STEM`` to point at their
+    subject-specific assets. All variants share the fitted skeleton's topology/FK/inertia
+    and DOF set, so the ``kinematic_info``/``control_info`` already extracted from the
+    default asset stay valid -- only geometry and physical parameters differ. Newton's
+    MJCF importer routes geoms with ``contype/conaffinity=0`` to visuals and ``=1`` to
+    colliders.
     """
     choice = _foot_collision_choice()
-    robot_cfg.asset.asset_file_name = _FOOT_COLLISION_ASSETS[choice]
-    print(f"[biomech] foot-collision variant: {choice} -> {robot_cfg.asset.asset_file_name}")
+    asset_root = os.environ.get("BIOMECH_ASSET_ROOT")
+    if asset_root:
+        robot_cfg.asset.asset_root = asset_root
+    robot_cfg.asset.asset_file_name = _asset_file_name(choice)
+    print(
+        f"[biomech] foot-collision variant: {choice} -> "
+        f"{os.path.join(robot_cfg.asset.asset_root, robot_cfg.asset.asset_file_name)}"
+    )
     robot_cfg.update_fields(
         contact_bodies=["all_left_foot_bodies", "all_right_foot_bodies"]
     )

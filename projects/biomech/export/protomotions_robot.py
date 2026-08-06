@@ -180,6 +180,22 @@ def build_simbody_motion(
     body_names = [
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, b) for b in body_ids
     ]
+    dof_names = []
+    for j in range(model.njnt):
+        joint_type = model.jnt_type[j]
+        if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+            continue
+        if joint_type not in (
+            mujoco.mjtJoint.mjJNT_HINGE,
+            mujoco.mjtJoint.mjJNT_SLIDE,
+        ):
+            raise ValueError(
+                "sim-body motion only supports non-root hinge/slide joints, "
+                f"got MuJoCo joint type {joint_type}"
+            )
+        dof_names.append(
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j)
+        )
     nb = len(body_ids)
 
     pos = np.zeros((F, nb, 3), dtype=np.float64)
@@ -208,6 +224,11 @@ def build_simbody_motion(
         [dart_q_to_mjcf_qpos(spec, q_t[f], group_scales, coupled_knee) for f in range(F)]
     )
     dof_pos = qpos[:, 7:]
+    if dof_pos.shape[1] != len(dof_names):
+        raise ValueError(
+            f"motion has {dof_pos.shape[1]} non-root coordinates but MJCF has "
+            f"{len(dof_names)} named DOFs"
+        )
     dof_vel = _finite_diff_lin(dof_pos, dt)
 
     import torch
@@ -230,7 +251,7 @@ def build_simbody_motion(
         tm2og_motion(data_dict, np.asarray(belt_speed), float(fps), body_names)
 
     return MotionExportResult(
-        data=data_dict, body_names=body_names, dof_names=[], fps=float(fps)
+        data=data_dict, body_names=body_names, dof_names=dof_names, fps=float(fps)
     )
 
 
