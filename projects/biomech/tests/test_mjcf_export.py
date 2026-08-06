@@ -100,6 +100,58 @@ def test_export_structure():
     assert "walker_knee_r" in res.coupled_report
     for _dn, info in res.coupled_report["walker_knee_r"].items():
         assert info["max_abs_fit_residual"] < 1e-4
+    assert 'balanceinertia="false"' in res.xml
+    assert res.inertia_report["toes_r"]["source_repaired"]
+
+
+def test_affine_inertia_scaling_matches_point_cloud_oracle():
+    from biomech.export.mjcf import (
+        _inertia6_to_matrix,
+        _scale_inertia_about_com,
+    )
+
+    rng = np.random.default_rng(19)
+    points = rng.normal(size=(1000, 3))
+    weights = rng.uniform(0.1, 2.0, size=points.shape[0])
+    weights /= weights.sum()
+    points -= np.average(points, axis=0, weights=weights)
+
+    def inertia_of(x, w):
+        second = np.einsum("n,ni,nj->ij", w, x, x)
+        return np.trace(second) * np.eye(3) - second
+
+    source = inertia_of(points, weights)
+    source6 = np.array(
+        [source[0, 0], source[1, 1], source[2, 2], source[0, 1], source[0, 2], source[1, 2]]
+    )
+    scale = np.array([0.6, 1.4, 0.9])
+    mass_ratio = 1.7
+    actual6, report = _scale_inertia_about_com(source6, scale, mass_ratio)
+    expected = inertia_of(points * scale, weights * mass_ratio)
+    assert np.allclose(_inertia6_to_matrix(actual6), expected, atol=1e-12)
+    assert not report["source_repaired"]
+    assert report["scaled_triangle_margin"] >= 0.0
+
+
+def test_mujoco_keeps_authored_inertia_without_balancing():
+    from biomech.export.mjcf import _inertia6_to_matrix, export_mjcf
+
+    mujoco = _require_mujoco()
+    spec = _spec()
+    scales = np.linspace(0.7, 1.3, spec.group_scales_dim)
+    res = export_mjcf(spec, group_scales=scales, subject_mass=81.65)
+    model = mujoco.MjModel.from_xml_string(res.xml)
+    for body in spec.bodies:
+        body_id = model.body(body.name).id
+        quat = np.asarray(model.body_iquat[body_id], dtype=np.float64)
+        mat = np.empty(9, dtype=np.float64)
+        mujoco.mju_quat2Mat(mat, quat)
+        rotation = mat.reshape(3, 3)
+        compiled = rotation @ np.diag(model.body_inertia[body_id]) @ rotation.T
+        authored = _inertia6_to_matrix(
+            res.inertia_report[body.name]["scaled_inertia"]
+        )
+        assert np.allclose(compiled, authored, atol=1e-10)
 
 
 def test_hinge_mode_reports_dropped_coupling():

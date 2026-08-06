@@ -79,6 +79,7 @@ class MjcfExportResult:
     joint_names: list[str]  # per-DOF MuJoCo joint names, in qpos order (excl. free root)
     qpos_dim: int  # length of Newton joint_q (free root = 7)
     coupled_report: dict  # per coupled joint: fit/dropped diagnostics
+    inertia_report: dict  # source repairs + final physicality diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +129,75 @@ def _rotmat_to_quat_wxyz(R: np.ndarray) -> np.ndarray:
 
 def _fmt(vals) -> str:
     return " ".join(repr(float(v)) for v in np.asarray(vals).ravel())
+
+
+def _inertia6_to_matrix(inertia: np.ndarray) -> np.ndarray:
+    ixx, iyy, izz, ixy, ixz, iyz = np.asarray(inertia, dtype=np.float64)
+    return np.array(
+        [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]],
+        dtype=np.float64,
+    )
+
+
+def _matrix_to_inertia6(inertia: np.ndarray) -> np.ndarray:
+    return np.array(
+        [
+            inertia[0, 0],
+            inertia[1, 1],
+            inertia[2, 2],
+            inertia[0, 1],
+            inertia[0, 2],
+            inertia[1, 2],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _physical_second_moment(
+    inertia: np.ndarray, *, eigenvalue_floor: float = 1.0e-12
+) -> tuple[np.ndarray, dict]:
+    """Return a PSD mass second-moment tensor and any source-inertia repair report."""
+    matrix = _inertia6_to_matrix(inertia)
+    second_moment = 0.5 * np.trace(matrix) * np.eye(3) - matrix
+    eigvals, eigvecs = np.linalg.eigh(second_moment)
+    # Keep a small positive margin that survives Newton's float32 import. A merely
+    # semidefinite tensor can round back across MuJoCo's A+B>=C triangle check.
+    floor = max(eigenvalue_floor, float(np.max(np.abs(eigvals))) * 1.0e-5)
+    clipped = np.maximum(eigvals, floor)
+    repaired = eigvecs @ np.diag(clipped) @ eigvecs.T
+    report = {
+        "source_second_moment_min_eigenvalue": float(eigvals.min()),
+        "second_moment_eigenvalue_floor": floor,
+        "source_repaired": bool(np.any(eigvals < eigenvalue_floor)),
+    }
+    if report["source_repaired"]:
+        repaired_inertia = np.trace(repaired) * np.eye(3) - repaired
+        report["source_inertia"] = np.asarray(inertia, dtype=np.float64).tolist()
+        report["repaired_inertia"] = _matrix_to_inertia6(repaired_inertia).tolist()
+    return repaired, report
+
+
+def _scale_inertia_about_com(
+    inertia: np.ndarray, scale: np.ndarray, mass_ratio: float
+) -> tuple[np.ndarray, dict]:
+    """Exact central inertia under anisotropic affine geometry scaling."""
+    second_moment, report = _physical_second_moment(inertia)
+    scale = np.asarray(scale, dtype=np.float64)
+    scaled_second_moment = float(mass_ratio) * (
+        scale[:, None] * second_moment * scale[None, :]
+    )
+    scaled_inertia = (
+        np.trace(scaled_second_moment) * np.eye(3) - scaled_second_moment
+    )
+    principal = np.linalg.eigvalsh(scaled_inertia)
+    report["scaled_inertia"] = _matrix_to_inertia6(scaled_inertia).tolist()
+    report["scaled_principal_inertia"] = principal.tolist()
+    report["scaled_triangle_margin"] = float(
+        principal[0] + principal[1] - principal[2]
+    )
+    if principal[0] <= 0.0 or report["scaled_triangle_margin"] < -1.0e-12:
+        raise ValueError(f"affine-scaled inertia is nonphysical: {principal.tolist()}")
+    return _matrix_to_inertia6(scaled_inertia), report
 
 
 class _ScaleMap:
@@ -415,7 +485,7 @@ def export_mjcf(
 
     lines: list[str] = []
     lines.append(f'<mujoco model="{name}">')
-    compiler = '  <compiler angle="radian" autolimits="true" balanceinertia="true"'
+    compiler = '  <compiler angle="radian" autolimits="true" balanceinertia="false"'
     if mesh_assets:
         compiler += f' meshdir="{meshdir}"'
     compiler += "/>"
@@ -431,6 +501,7 @@ def export_mjcf(
 
     body_order: list[str] = []
     real_body_row: dict = {}
+    inertia_report: dict[str, dict] = {}
 
     def _emit_geoms(body_name: str, indent: str):
         """Visual-only capsules (parent->child bones) + a sphere at leaf bodies."""
@@ -519,19 +590,10 @@ def export_mjcf(
         cs = sm.of(body_name)
         com = bspec.com * cs
         mass = max(bspec.mass * mass_ratio, 1e-9)
-        # Scale inertia to the subject: mass ratio x anisotropic geometry. Products
-        # (Ixy,Ixz,Iyz) scale exactly by the pairwise axis factors; diagonal terms use
-        # the I_xx = int(y^2+z^2)dm split (mean of the two orthogonal axis factors^2).
-        sx, sy, sz = float(cs[0]), float(cs[1]), float(cs[2])
-        ixx, iyy, izz, ixy, ixz, iyz = (float(v) for v in bspec.inertia)
-        inertia = np.array([
-            ixx * mass_ratio * 0.5 * (sy * sy + sz * sz),
-            iyy * mass_ratio * 0.5 * (sx * sx + sz * sz),
-            izz * mass_ratio * 0.5 * (sx * sx + sy * sy),
-            ixy * mass_ratio * sx * sy,
-            ixz * mass_ratio * sx * sz,
-            iyz * mass_ratio * sy * sz,
-        ], dtype=np.float64)
+        inertia, inertia_info = _scale_inertia_about_com(
+            bspec.inertia, cs, mass_ratio
+        )
+        inertia_report[body_name] = inertia_info
         lines.append(
             f'{indent}<inertial pos="{_fmt(com)}" mass="{repr(float(mass))}" '
             f'fullinertia="{_fmt(inertia)}"/>'
@@ -643,6 +705,7 @@ def export_mjcf(
         joint_names=joint_names,
         qpos_dim=qpos_dim,
         coupled_report=report,
+        inertia_report=inertia_report,
     )
 
 
