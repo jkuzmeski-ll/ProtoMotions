@@ -306,18 +306,29 @@ def test_foot_collision_switch_selects_asset():
         assert cfg.asset.asset_file_name == "mjcf/biomech_rajagopal_spheres.xml"
 
         # A generated bundle can be selected without overwriting the default asset.
-        os.environ["BIOMECH_ASSET_ROOT"] = "generated/assets"
-        os.environ["BIOMECH_ASSET_STEM"] = "biomech_s001_deadbeef"
-        cfg = robot_config("biomech")
-        exp.configure_robot_and_simulator(cfg, None, args)
-        assert cfg.asset.asset_root == "generated/assets"
-        assert cfg.asset.asset_file_name == "mjcf/biomech_s001_deadbeef_spheres.xml"
+        from biomech.export.protomotions_robot import write_biomech_asset
 
-        # argv still overrides the env var (forward-compat)
-        sys.argv = ["train_agent.py", "--foot-collision=none"]
-        cfg = robot_config("biomech")
-        exp.configure_robot_and_simulator(cfg, None, args)
-        assert cfg.asset.asset_file_name == "mjcf/biomech_s001_deadbeef.xml"
+        with tempfile.TemporaryDirectory() as tmp:
+            generated_root = Path(tmp) / "assets"
+            write_biomech_asset(
+                _spec(),
+                asset_file_name="mjcf/biomech_s001_deadbeef.xml",
+                asset_root="assets",
+                repo_root=tmp,
+                bone_meshes=False,
+            )
+            os.environ["BIOMECH_ASSET_ROOT"] = str(generated_root)
+            os.environ["BIOMECH_ASSET_STEM"] = "biomech_s001_deadbeef"
+            cfg = robot_config("biomech")
+            exp.configure_robot_and_simulator(cfg, None, args)
+            assert cfg.asset.asset_root == str(generated_root)
+            assert cfg.asset.asset_file_name == "mjcf/biomech_s001_deadbeef_spheres.xml"
+
+            # argv still overrides the env var (forward-compat)
+            sys.argv = ["train_agent.py", "--foot-collision=none"]
+            cfg = robot_config("biomech")
+            exp.configure_robot_and_simulator(cfg, None, args)
+            assert cfg.asset.asset_file_name == "mjcf/biomech_s001_deadbeef.xml"
     finally:
         sys.argv = saved_argv
         for key, value in saved_env.items():

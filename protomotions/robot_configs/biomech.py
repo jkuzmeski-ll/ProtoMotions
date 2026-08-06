@@ -20,6 +20,7 @@ ProtoMotions robot on the Newton simulator).
 """
 
 from dataclasses import dataclass, field
+import os
 from typing import Dict, List
 
 from protomotions.components.pose_lib import ControlInfo
@@ -39,6 +40,23 @@ _DAMPING_RATIO = 2.0
 _ARMATURE = 0.01
 _STIFFNESS = _ARMATURE * _NATURAL_FREQ**2
 _DAMPING = 2.0 * _DAMPING_RATIO * _ARMATURE * _NATURAL_FREQ
+
+
+def _asset_config() -> RobotAssetConfig:
+    """Resolve the exact generated subject asset before kinematics are extracted."""
+    stem = os.environ.get("BIOMECH_ASSET_STEM", "biomech_rajagopal")
+    if not stem or stem != os.path.basename(stem) or stem.endswith(".xml"):
+        raise ValueError(
+            "BIOMECH_ASSET_STEM must be a file stem without directories or .xml, "
+            f"got {stem!r}"
+        )
+    return RobotAssetConfig(
+        asset_root=os.environ.get(
+            "BIOMECH_ASSET_ROOT", "protomotions/data/assets"
+        ),
+        asset_file_name=f"mjcf/{stem}.xml",
+        self_collisions=False,
+    )
 
 
 @dataclass
@@ -74,10 +92,7 @@ class BiomechRobotConfig(RobotConfig):
     anchor_body_name: str = "torso"
 
     asset: RobotAssetConfig = field(
-        default_factory=lambda: RobotAssetConfig(
-            asset_file_name="mjcf/biomech_rajagopal.xml",
-            self_collisions=False,
-        )
+        default_factory=_asset_config
     )
 
     control: ControlConfig = field(
