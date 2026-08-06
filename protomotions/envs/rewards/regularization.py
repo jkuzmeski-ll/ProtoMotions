@@ -85,6 +85,7 @@ def compute_pow_rew(
     dof_forces: Tensor,
     dof_vel: Tensor,
     use_torque_squared: bool = False,
+    indices: Optional[Tensor] = None,
 ) -> Tensor:
     """Power consumption reward.
     
@@ -96,7 +97,9 @@ def compute_pow_rew(
     Returns:
         Power consumption tensor [num_envs].
     """
-    return power_consumption_sum(dof_forces, dof_vel, use_torque_squared)
+    return power_consumption_sum(
+        dof_forces, dof_vel, use_torque_squared, indices=indices
+    )
 
 
 def compute_soft_pos_limit_rew(

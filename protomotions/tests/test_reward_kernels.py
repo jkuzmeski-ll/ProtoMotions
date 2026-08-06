@@ -230,6 +230,14 @@ def test_regularization_rewards_and_helpers():
         torch.tensor([13.0]),
     )
     assert torch.allclose(
+        regularization.compute_pow_rew(
+            torch.tensor([[2.0, -3.0]]),
+            torch.tensor([[10.0, -2.0]]),
+            indices=torch.tensor([1]),
+        ),
+        torch.tensor([6.0]),
+    )
+    assert torch.allclose(
         regularization.compute_soft_pos_limit_rew(dof_pos, lower, upper),
         torch.tensor([1.0, 2.0]),
     )

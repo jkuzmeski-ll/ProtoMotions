@@ -41,6 +41,8 @@ Example:
 
 from typing import Any, Dict, List, Optional, Union
 
+import torch
+
 from protomotions.envs.context_views import EnvContext
 from protomotions.envs.mdp_component import MdpComponent
 
@@ -784,6 +786,7 @@ def pow_rew_factory(
     weight: float = -1e-5,
     min_value: Optional[float] = -0.5,
     use_torque_squared: bool = False,
+    indices: Optional[torch.Tensor] = None,
 ) -> MdpComponent:
     """Factory for power consumption reward.
 
@@ -797,7 +800,11 @@ def pow_rew_factory(
     """
     from protomotions.envs.rewards import compute_pow_rew
 
-    static_params = {"weight": weight, "use_torque_squared": use_torque_squared}
+    static_params = {
+        "weight": weight,
+        "use_torque_squared": use_torque_squared,
+        "indices": indices,
+    }
     if min_value is not None:
         static_params["min_value"] = min_value
 

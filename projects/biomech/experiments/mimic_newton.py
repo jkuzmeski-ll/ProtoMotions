@@ -123,6 +123,8 @@ def motion_lib_config(args: argparse.Namespace):
 
 
 def env_config(robot_cfg: RobotConfig, args: argparse.Namespace) -> EnvConfig:
+    import torch
+
     from protomotions.envs.action import make_pd_action_config
     from protomotions.envs.component_factories import (
         action_smoothness_factory,
@@ -163,7 +165,18 @@ def env_config(robot_cfg: RobotConfig, args: argparse.Namespace) -> EnvConfig:
             gav_coef=-0.1,
             rh_coef=-100.0,
         ),
-        "pow_rew": pow_rew_factory(weight=-1e-5, min_value=-0.5),
+        "pow_rew": pow_rew_factory(
+            weight=-1e-5,
+            min_value=-0.5,
+            indices=torch.tensor(
+                [
+                    i
+                    for i, name in enumerate(robot_cfg.kinematic_info.dof_names)
+                    if robot_cfg.control.control_info[name].actuated is not False
+                ],
+                dtype=torch.long,
+            ),
+        ),
         # Reference contact labels come from the GRF-derived per-body foot contacts baked
         # into the .motion by tools/export_s001_subject.py (foot_contacts_from_clip).
         "contact_match_rew": contact_match_rew_factory(

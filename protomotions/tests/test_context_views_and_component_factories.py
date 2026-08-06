@@ -313,6 +313,9 @@ def test_reward_factories_and_bundles_bind_expected_context_paths():
     assert _bindings(power)["dof_forces"] == "current.dof_forces"
     assert "min_value" not in _params(power)
     assert _params(power)["use_torque_squared"] is True
+    assert _params(power)["indices"] is None
+    indexed_power = factories.pow_rew_factory(indices=torch.tensor([0, 2]))
+    assert torch.equal(_params(indexed_power)["indices"], torch.tensor([0, 2]))
     default_power = factories.pow_rew_factory(min_value=-0.25)
     assert _params(default_power)["min_value"] == -0.25
 
