@@ -106,6 +106,11 @@ class BiomechRobotConfig(RobotConfig):
                     effort_limit=300.0,
                     velocity_limit=40.0,
                 ),
+                r"walker_knee_[rl]__(translation[12]|rotation[23])": ControlInfo(
+                    stiffness=0.0,
+                    damping=0.0,
+                    actuated=False,
+                ),
             },
         )
     )

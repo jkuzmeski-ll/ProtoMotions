@@ -32,11 +32,11 @@ def _mixed_dof_robot_config(**control_overrides):
         "hinge4",
     ]
     default_control = {
-        "body3_x": SimpleNamespace(stiffness=10.0, damping=1.0, effort_limit=100.0),
-        "body3_y": SimpleNamespace(stiffness=20.0, damping=2.0, effort_limit=80.0),
-        "body3_z": SimpleNamespace(stiffness=40.0, damping=4.0, effort_limit=60.0),
-        "hinge1": SimpleNamespace(stiffness=50.0, damping=5.0, effort_limit=25.0),
-        "hinge4": SimpleNamespace(stiffness=100.0, damping=10.0, effort_limit=10.0),
+        "body3_x": SimpleNamespace(stiffness=10.0, damping=1.0, effort_limit=100.0, actuated=True),
+        "body3_y": SimpleNamespace(stiffness=20.0, damping=2.0, effort_limit=80.0, actuated=True),
+        "body3_z": SimpleNamespace(stiffness=40.0, damping=4.0, effort_limit=60.0, actuated=True),
+        "hinge1": SimpleNamespace(stiffness=50.0, damping=5.0, effort_limit=25.0, actuated=True),
+        "hinge4": SimpleNamespace(stiffness=100.0, damping=10.0, effort_limit=10.0, actuated=True),
     }
     default_control.update(control_overrides)
     return SimpleNamespace(
@@ -189,6 +189,22 @@ def test_make_pd_action_config_builds_normalized_action_config_from_robot_data()
         config["stiffness"], torch.tensor([10.0, 20.0, 40.0, 50.0, 100.0])
     )
     assert torch.equal(config["damping"], torch.tensor([1.0, 2.0, 4.0, 5.0, 10.0]))
+
+
+def test_make_pd_action_config_zeroes_passive_action_scale_and_gains():
+    robot_config = _mixed_dof_robot_config(
+        hinge1=SimpleNamespace(
+            stiffness=0.0,
+            damping=0.0,
+            effort_limit=25.0,
+            actuated=False,
+        )
+    )
+    config = make_pd_action_config(robot_config)
+    assert config["pd_action_scale"][3] == 0.0
+    assert config["stiffness"][3] == 0.0
+    assert config["damping"][3] == 0.0
+    assert config["pd_action_scale"][4] > 0.0
 
 
 def test_make_bm_pd_action_config_uses_default_pose_and_effort_over_stiffness_scale():

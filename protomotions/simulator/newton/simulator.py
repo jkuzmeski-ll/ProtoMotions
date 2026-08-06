@@ -311,7 +311,8 @@ class NewtonSimulator(Simulator):
 
     def _set_builder_dof_properties(self, dof_idx: int, info) -> None:
         """Set a single builder DOF's properties from a ControlInfo entry."""
-        if self.control_type == ControlType.BUILT_IN_PD:
+        actuated = getattr(info, "actuated", True) is not False
+        if self.control_type == ControlType.BUILT_IN_PD and actuated:
             self.robot.joint_target_ke[dof_idx] = info.stiffness
             self.robot.joint_target_kd[dof_idx] = info.damping
             self.robot.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION)

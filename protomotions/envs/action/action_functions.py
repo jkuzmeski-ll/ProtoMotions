@@ -299,6 +299,15 @@ def make_pd_action_config(
     )
 
     joint_names = robot_config.kinematic_info.dof_names
+    actuated = torch.tensor(
+        [
+            getattr(robot_config.control.control_info[j], "actuated", True) is not False
+            for j in joint_names
+        ],
+        dtype=torch.bool,
+    )
+    pd_action_scale = pd_action_scale.clone()
+    pd_action_scale[~actuated] = 0.0
     stiffness = torch.tensor(
         [robot_config.control.control_info[j].stiffness for j in joint_names],
         dtype=torch.float32,

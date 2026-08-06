@@ -232,6 +232,7 @@ def test_kinematic_info_to_moves_all_tensor_fields_and_hinge_axes_dtype():
         parent_indices=[-1, 0],
         local_pos=torch.zeros(2, 3, dtype=torch.float32),
         local_rot_ref_mat=torch.eye(3, dtype=torch.float32).repeat(2, 1, 1),
+        local_joint_pos=torch.zeros(2, 3, dtype=torch.float32),
         hinge_axes_map={1: torch.tensor([[0.0, 0.0, 1.0]], dtype=torch.float32)},
         nq=8,
         nv=7,
@@ -779,6 +780,7 @@ def test_extract_control_info_reads_joint_values_and_regex_overrides(tmp_path):
                 friction=0.6,
                 effort_limit=11.0,
                 velocity_limit=13.0,
+                actuated=False,
             )
         },
     )
@@ -790,6 +792,7 @@ def test_extract_control_info_reads_joint_values_and_regex_overrides(tmp_path):
     assert elbow.friction == pytest.approx(0.6)
     assert elbow.effort_limit == pytest.approx(11.0)
     assert elbow.velocity_limit == pytest.approx(13.0)
+    assert elbow.actuated is False
 
 
 def test_extract_control_info_wraps_mjcf_parse_errors(tmp_path):

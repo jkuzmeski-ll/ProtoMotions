@@ -214,6 +214,19 @@ def test_biomech_robot_in_factory():
     assert cfg.number_of_actions == 33
     assert cfg.anchor_body_name == "torso"
     assert "calcn_l" in cfg.common_naming_to_robot_body_names["all_left_foot_bodies"]
+    passive = {
+        name for name, info in cfg.control.control_info.items() if info.actuated is False
+    }
+    assert passive == {
+        "walker_knee_r__translation1",
+        "walker_knee_r__translation2",
+        "walker_knee_r__rotation2",
+        "walker_knee_r__rotation3",
+        "walker_knee_l__translation1",
+        "walker_knee_l__translation2",
+        "walker_knee_l__rotation2",
+        "walker_knee_l__rotation3",
+    }
 
 
 def test_mimic_newton_experiment_builds_configs():

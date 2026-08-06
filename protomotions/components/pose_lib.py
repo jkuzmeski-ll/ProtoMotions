@@ -129,6 +129,7 @@ class ControlInfo:
     friction: Optional[float] = field(default=None)
     effort_limit: Optional[float] = field(default=None)
     velocity_limit: Optional[float] = field(default=None)
+    actuated: Optional[bool] = field(default=None)
 
 
 def compute_joint_loss_weights(
@@ -637,6 +638,7 @@ def extract_control_info(
         armature = getattr(joint, "armature", DEFAULT_ARMATURE)
         friction = getattr(joint, "frictionloss", DEFAULT_FRICTION)
         velocity_limit = None
+        actuated = True
 
         # Extract actuator force range if available
         effort_limit = getattr(joint, "actuatorfrcrange", DEFAULT_EFFORT_LIMIT)
@@ -681,6 +683,12 @@ def extract_control_info(
                         effort_limit = override_joint_control_info.effort_limit
                     if override_joint_control_info.velocity_limit is not None:
                         velocity_limit = override_joint_control_info.velocity_limit
+                    if override_joint_control_info.actuated is not None:
+                        if not isinstance(override_joint_control_info.actuated, bool):
+                            raise ValueError(
+                                f"ControlInfo.actuated for {joint_name!r} must be bool"
+                            )
+                        actuated = override_joint_control_info.actuated
 
         dof_control_info = ControlInfo(
             stiffness=stiffness,
@@ -689,6 +697,7 @@ def extract_control_info(
             friction=friction,
             effort_limit=effort_limit,
             velocity_limit=velocity_limit,
+            actuated=actuated,
         )
 
         return dof_control_info
