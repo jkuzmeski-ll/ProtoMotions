@@ -80,7 +80,7 @@ PD actuators; equality constraints generate the eight dependent spline coordinat
 ### Validated S001 Result
 
 The full documented walk command was run over frames 1469-7469 (6,000 frames, 59.99 s).
-The resulting local bundle is `outputs/biomech/biomech_s001_9778c180e2f4`.
+The resulting local bundle is `outputs/biomech/biomech_s001_f55f026db597`.
 
 - Raw Euclidean marker RMS: 23.52 mm; median anatomical-marker RMS: 9.58 mm.
 - Delivered foot-corrected RMS: 31.22 mm; anatomical median: 19.88 mm.
