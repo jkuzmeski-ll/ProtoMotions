@@ -1,13 +1,89 @@
-# biomech — gold-standard capture ingestion (Milestone 1)
+# biomech - C3D to ProtoMotions
 
-Local, dependency-light ingestion of mocap + instrumented-treadmill captures into
-one explicitly-framed, unit-checked, time-aligned `CaptureSession`. This is the
-first stage of the pipeline that turns real captures into biomechanically
-gold-standard skeleton motions for Newton contact-model research.
+The unified pipeline turns marker and instrumented-treadmill C3D data into a
+subject-specific Rajagopal MJCF and a simulator-body-aligned ProtoMotions motion.
+It connects capture ingestion, marker cleanup, symmetric subject scaling, static foot
+calibration, robust marker fitting, treadmill-to-overground conversion, measured
+ground/contact data, subject mass, collision geometry, and ProtoMotions validation in
+one command.
 
-Everything runs locally. No `ezc3d`/`c3d`/web service is required — only `numpy`.
+## Unified pipeline
 
-## What Milestone 1 delivers
+From the repository root, the S001 fidelity path is:
+
+```powershell
+.venv\Scripts\python.exe projects/biomech/c3d_to_protomotions.py `
+    --trial "projects/data/S001/Trial 101.v3d.c3d" `
+    --static "projects/data/S001/Cal 101.v3d.c3d" `
+    --left-belt "projects/data/S001/LeftBelt101.txt" `
+    --right-belt "projects/data/S001/RightBelt101.txt" `
+    --speedchange "projects/data/S001/Speedchange101.txt" `
+    --subject-mp "projects/data/S001/S001.mp" `
+    --subject-id S001 --phase walk --device cuda:0
+```
+
+The command creates a content-addressed directory under `outputs/biomech/` with:
+
+- a subject-mass-matched base MJCF;
+- subject-sized box and sphere foot-collision MJCF variants;
+- a ProtoMotions `.motion` with exact simulator body/DOF order and measured contacts;
+- `fit/reconstruction.npz` containing raw marker-optimal and delivered poses, scales,
+  marker offsets, weights, GRF/COP, and correction provenance;
+- `manifest.json` containing input hashes, all settings, fit/contact metrics, artifact
+  hashes, quality gates, and the exact training environment/command.
+
+Use `--frames 150` for a fast integration/smoke bundle. Omitting it, as above, reconstructs
+the complete selected protocol phase.
+
+Running the same command again verifies and reuses the completed bundle. Content-addressed
+bundles are immutable: `--force` recomputes and verifies equivalent arrays and deterministic
+XML rather than replacing a live bundle. By default the pipeline fails rather than silently dropping
+requested belt, force, mass, contact, or validation stages.
+
+The default fitting path is the locally validated S001 Plug-in-Gait mapping. A new marker
+protocol needs an explicit `MarkerMap`; it is not guessed from label names.
+
+`--anthropometric-prior` is available for experiments but is off by default: the current
+`.mp` length prior degraded S001 marker/gait accuracy in local benchmarks. Subject mass is
+still always applied when supplied.
+
+The manifest reports marker-optimal and final foot-corrected errors separately. Both must
+pass. The final correction may improve the anatomical sole/contact frame while worsening
+shoe-marker reprojection, so a good raw fit never hides a poor delivered motion.
+Measured contact labels use the configured fixed vertical-force threshold (50 N by
+default), plus each heel/toe collider's height, rather than a clip-relative force peak.
+
+### Training the generated subject
+
+Read the three values from `manifest.json` under `training`. In PowerShell:
+
+```powershell
+$env:BIOMECH_ASSET_ROOT="<bundle>/assets"
+$env:BIOMECH_ASSET_STEM="<manifest export.asset_stem>"
+$env:BIOMECH_FOOT_COLLISION="boxes"
+python protomotions/train_agent.py --robot-name biomech --simulator newton `
+    --experiment-path projects/biomech/experiments/mimic_newton.py `
+    --experiment-name biomech_subject_mimic `
+    --motion-file "<bundle>/motions/<asset-stem>.motion" `
+    --num-envs 1024 --batch-size 16384 --ngpu 1
+```
+
+`--dynamics-diagnostics` adds a corrected-frame inverse-dynamics shadow report. It does
+not alter the delivered motion or inertial parameters: measured free-moment sign,
+wrench-preserving analog downsampling, and real-data RRA/inertial export are not yet
+validated strongly enough to be production transformations.
+
+The coupled Rajagopal knee retains all dependent coordinates in observations and motion
+references, but they are passive in Newton. Only the 25 independent coordinates receive
+PD actuators; equality constraints generate the eight dependent spline coordinates.
+
+## Capture ingestion
+
+Everything runs locally. The C3D parser itself needs no `ezc3d`, `c3d`, or web service;
+the full fitting/export command also uses the repository's NumPy/SciPy, Warp, MuJoCo,
+PyTorch, and ProtoMotions environment.
+
+### What ingestion delivers
 
 - A full C3D reader (`io/c3d.py`) that returns **dense, frame-indexed** marker
   arrays in meters (NaN in gaps) plus all analog channels at the analog rate,

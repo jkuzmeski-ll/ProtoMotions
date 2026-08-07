@@ -148,7 +148,10 @@ def test_subject_sole_drives_contact():
     pred = evaluate_contact(sole, params, body_pos, quat, z, z, ground_z=ground_z)
     assert pred.total_normal[0] > 0.0
     assert np.all(np.isfinite(pred.grf))
-    assert lo < 0.0  # plantar surface sits below the anchor plane
+    # The corrected anatomical sole uses calcn +y as plantar-up. Its deepest plantar
+    # point is the body-frame y=0 tangent plane; ``plantar_drop`` offsets the marker
+    # anchor used to build that plane rather than requiring negative body y.
+    assert abs(lo) < 1e-12
 
 
 def test_real_s001_static_dimensions():

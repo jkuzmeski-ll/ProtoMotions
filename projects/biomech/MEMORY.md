@@ -509,10 +509,10 @@ biomech/
   * **Residual (unchanged, separate limitation):** rigid boxes + single z-shift can't plant a
     rolling foot -- toes_r box penetrates ~-31 mm at push-off while toes float ~+11 mm in
     stance. Follow-up: per-phase / soft ground registration.
-  * **Pre-existing unrelated test failure:** `test_foot_geometry.py::test_subject_sole_drives_contact`
-    fails since `b91eb32` (`up=+y` sole) -- `build_subject_sole` min body-y is 0.0, so the
-    `assert lo < 0.0` (test uses body-y as the down axis) no longer holds for the synthetic
-    spec. Independent of the foot-flat fix; not addressed (would touch the shipped sole fix).
+  * **Former unrelated test failure RESOLVED:**
+    `test_foot_geometry.py::test_subject_sole_drives_contact` now asserts the corrected
+    anatomical convention: `build_subject_sole` is tangent at body-y=0 because calcn +y
+    is plantar-up; `plantar_drop` offsets the marker anchor, not the final sole below zero.
   **SIM WIRING DONE** (commit `50f425f`): `--foot-collision {none,spheres,boxes}` (default
   `boxes`) in `experiments/mimic_newton.py::configure_robot_and_simulator` swaps
   `robot_cfg.asset.asset_file_name` to the matching MJCF (parsed from `sys.argv` because

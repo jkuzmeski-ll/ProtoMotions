@@ -59,6 +59,7 @@ TEST_MODULES = [
     "biomech.tests.test_contact_pipeline",
     "biomech.tests.test_forward_sim",
     "biomech.tests.test_tracking",
+    "biomech.tests.test_unified_pipeline",
 ]
 
 
