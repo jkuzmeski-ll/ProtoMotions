@@ -750,8 +750,19 @@ class NewtonSimulator(Simulator):
         )
 
     def _create_contacts(self) -> None:
-        """Create Contacts object via Model.contacts() (Newton 1.0+ API)."""
-        self.contacts = self.model.contacts()
+        """Create a contact buffer large enough for MuJoCo's compiled capacity."""
+        rigid_contact_max = int(self.solver.get_max_contact_count())
+        collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase="explicit",
+            rigid_contact_max=rigid_contact_max,
+        )
+        self.contacts = self.model.contacts(collision_pipeline)
+        if self.contacts.rigid_contact_max < rigid_contact_max:
+            raise RuntimeError(
+                "Newton contact allocation is smaller than MuJoCo's compiled "
+                f"capacity: {self.contacts.rigid_contact_max} < {rigid_contact_max}"
+            )
 
     def _simulate(self) -> None:
         """Run physics simulation for one frame (decimation substeps)."""

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from fnmatch import fnmatch
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,3 +51,39 @@ def test_validate_contact_sensor_match_raises_on_zero_matches():
             ["left_ankle_roll_link", "*/left_ankle_roll_link"],
             matched_body_count=0,
         )
+
+
+def test_newton_contact_buffer_uses_solver_capacity(monkeypatch):
+    from protomotions.simulator.newton import simulator as simulator_module
+
+    captured = {}
+
+    class FakePipeline:
+        def __init__(self, model, *, broad_phase, rigid_contact_max):
+            captured.update(
+                model=model,
+                broad_phase=broad_phase,
+                rigid_contact_max=rigid_contact_max,
+            )
+            self.rigid_contact_max = rigid_contact_max
+
+    fake_contacts = SimpleNamespace(rigid_contact_max=9600)
+    fake_model = SimpleNamespace(
+        contacts=lambda pipeline: (
+            captured.update(pipeline= pipeline) or fake_contacts
+        )
+    )
+    monkeypatch.setattr(simulator_module.newton, "CollisionPipeline", FakePipeline)
+
+    simulator = simulator_module.NewtonSimulator.__new__(
+        simulator_module.NewtonSimulator
+    )
+    simulator.model = fake_model
+    simulator.solver = SimpleNamespace(get_max_contact_count=lambda: 9600)
+    simulator._create_contacts()
+
+    assert captured["model"] is fake_model
+    assert captured["broad_phase"] == "explicit"
+    assert captured["rigid_contact_max"] == 9600
+    assert captured["pipeline"].rigid_contact_max == 9600
+    assert simulator.contacts is fake_contacts
