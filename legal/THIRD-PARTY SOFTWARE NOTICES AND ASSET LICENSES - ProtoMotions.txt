@@ -64,6 +64,21 @@ terms before use.
    These assets are not covered by the ProtoMotions Apache-2.0 license. Use is
    subject to the applicable SMPL/SMPL-H model terms.
 
+5. Rajagopal full-body musculoskeletal model and derived assets
+
+   Applied to:
+   - projects/biomech/models/rajagopal_data/
+   - protomotions/data/assets/mesh/biomech_rajagopal/
+   - protomotions/data/assets/mjcf/biomech_rajagopal*.xml
+
+   Copyright:
+   - Copyright (c) 2015 Stanford University
+
+   License: MIT
+
+   Project information:
+   - https://simtk.org/projects/full_body
+
 
 FULL LICENSE TEXTS
 ------------------

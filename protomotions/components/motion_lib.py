@@ -521,7 +521,7 @@ class MotionLib:
                 )
             )
 
-            curr_motion = torch.load(curr_file, weights_only=False)
+            curr_motion = torch.load(curr_file, weights_only=True)
             valid_motion_fields = {field_info.name for field_info in fields(RobotState)}
             curr_motion = {
                 key: value
@@ -646,8 +646,8 @@ class MotionLib:
 
             for motion_entry in motion_config.motions:
                 curr_file = motion_entry.file
-                curr_file = os.path.join(dir_name, curr_file)
-                motion_files.append(curr_file)
+                curr_file = Path(dir_name) / Path(curr_file)
+                motion_files.append(str(curr_file))
                 motion_weights.append(motion_entry.get("weight", 1.0))
 
         elif ext == ".npz" or ext == ".motion":
@@ -704,7 +704,7 @@ class MotionLib:
         """
         print(f"Loading motion library from {file_path}")
         loaded_data = torch.load(
-            file_path, map_location=self.device, weights_only=False
+            file_path, map_location=self.device, weights_only=True
         )
 
         # Pre-initialize all fields to None so missing fields (e.g. contacts

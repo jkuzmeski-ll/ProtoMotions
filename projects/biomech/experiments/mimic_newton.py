@@ -8,18 +8,12 @@ Mimic environment. The robot (`--robot-name biomech`) is the fitted skeleton exp
 `projects/biomech` (`biomech.export.protomotions_robot`); its MJCF lives at
 `protomotions/data/assets/mjcf/biomech_rajagopal.xml`.
 
-Prerequisites
--------------
-1. Write the robot asset (once, or after refitting a subject)::
-
-       python -c "import sys; sys.path.insert(0,'projects'); \
-           from biomech.osim import parse_osim; \
-           from biomech.export.protomotions_robot import write_biomech_asset; \
-           write_biomech_asset(parse_osim('projects/biomech/models/rajagopal_data/Rajagopal2015.osim'))"
-
-2. Build a sim-body-aligned motion clip with
-   `biomech.export.protomotions_robot.build_simbody_motion` (its body order matches this
-   robot, including the exporter's dummy bodies) and `torch.save` it as a `.motion`.
+Prerequisite
+------------
+Build a matched asset/motion bundle with ``projects/biomech/c3d_to_protomotions.py``.
+Do not regenerate only the base asset: the base, box, sphere, and motion files must share
+the same fitted subject topology. Set the three ``BIOMECH_*`` environment variables from
+the bundle manifest before training.
 
 Usage
 -----

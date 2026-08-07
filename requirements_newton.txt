@@ -5,6 +5,7 @@ wheel
 tensordict==0.9.0
 lightning
 numpy>=1.21.1
+scipy==1.15.3
 termcolor>=1.1.0
 scikit-image
 rtree==1.2.0

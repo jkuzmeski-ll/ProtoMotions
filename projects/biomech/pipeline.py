@@ -30,11 +30,22 @@ PIPELINE_SCHEMA = "biomech.c3d_to_protomotions"
 PIPELINE_VERSION = 1
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FINGERPRINT_SOURCE_ROOTS = (
-    "projects/biomech",
+    "projects/biomech/contact",
+    "projects/biomech/export",
+    "projects/biomech/fitting",
+    "projects/biomech/io",
+    "projects/biomech/osim",
+    "projects/biomech/skeleton",
     "protomotions/components",
     "protomotions/envs",
     "protomotions/robot_configs",
     "protomotions/simulator",
+)
+_FINGERPRINT_SOURCE_FILES = (
+    "projects/biomech/__init__.py",
+    "projects/biomech/frames.py",
+    "projects/biomech/pipeline.py",
+    "projects/biomech/session.py",
 )
 _DEFAULT_OSIM = (
     Path(__file__).resolve().parent
@@ -826,8 +837,8 @@ def _verify_equivalent_bundle(existing_dir: Path, staged_dir: Path, outputs: dic
             if existing_path.read_bytes() != staged_path.read_bytes():
                 raise RuntimeError(f"forced rebuild changed deterministic XML artifact {key}")
         elif key == "motion":
-            existing = torch.load(existing_path, map_location="cpu", weights_only=False)
-            staged = torch.load(staged_path, map_location="cpu", weights_only=False)
+            existing = torch.load(existing_path, map_location="cpu", weights_only=True)
+            staged = torch.load(staged_path, map_location="cpu", weights_only=True)
             if set(existing) != set(staged):
                 raise RuntimeError("forced rebuild changed motion fields")
             for field in existing:
@@ -972,7 +983,7 @@ def _runtime_versions() -> dict[str, Optional[str]]:
         "python": sys.version.split()[0],
         "numpy": np.__version__,
     }
-    for package in ("torch", "warp", "mujoco", "newton"):
+    for package in ("scipy", "torch", "warp", "mujoco", "newton"):
         try:
             module = __import__(package)
             versions[package] = getattr(module, "__version__", None)
@@ -985,6 +996,7 @@ def _implementation_record() -> dict[str, Any]:
     source_files: list[Path] = []
     for root in _FINGERPRINT_SOURCE_ROOTS:
         source_files.extend((_REPO_ROOT / root).rglob("*.py"))
+    source_files.extend(_REPO_ROOT / path for path in _FINGERPRINT_SOURCE_FILES)
     source_hashes = {
         path.relative_to(_REPO_ROOT).as_posix(): sha256_file(path)
         for path in sorted(set(source_files))
