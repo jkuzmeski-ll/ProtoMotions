@@ -486,6 +486,9 @@ def _try_reuse(
             return None
         outputs = manifest["outputs"]
         required = {"motion", "fit", "asset_none"}
+        required.update(
+            f"asset_{scheme}" for scheme in manifest["settings"]["collision_schemes"]
+        )
         if not required.issubset(outputs):
             return None
         for record in outputs.values():
@@ -505,7 +508,9 @@ def _try_reuse(
         }
         mesh_record = manifest.get("export", {}).get("bone_meshes")
         if mesh_record:
-            mesh_dir = bundle_dir / mesh_record["path"]
+            mesh_dir = _safe_bundle_path(bundle_dir, mesh_record["path"])
+            if not mesh_dir.is_dir():
+                return None
             mesh_files = sorted(mesh_dir.glob("*.stl"))
             mesh_hash = fingerprint_payload(
                 [{"name": p.name, "sha256": sha256_file(p)} for p in mesh_files]

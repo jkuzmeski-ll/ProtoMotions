@@ -94,6 +94,7 @@ def test_reuse_rejects_missing_or_changed_artifacts():
                 },
             },
             "export": {"bone_meshes": None},
+            "settings": {"collision_schemes": []},
         }
         manifest_path = bundle / "manifest.json"
         manifest_path.write_text(json.dumps(manifest))

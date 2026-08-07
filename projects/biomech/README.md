@@ -77,6 +77,23 @@ The coupled Rajagopal knee retains all dependent coordinates in observations and
 references, but they are passive in Newton. Only the 25 independent coordinates receive
 PD actuators; equality constraints generate the eight dependent spline coordinates.
 
+### Validated S001 Result
+
+The full documented walk command was run over frames 1469-7469 (6,000 frames, 59.99 s).
+The resulting local bundle is `outputs/biomech/biomech_s001_9778c180e2f4`.
+
+- Raw Euclidean marker RMS: 23.52 mm; median anatomical-marker RMS: 9.58 mm.
+- Delivered foot-corrected RMS: 31.22 mm; anatomical median: 19.88 mm.
+- Exported mass: 81.650018 kg; measured loaded GRF: 1.003 times bodyweight.
+- Loaded-stance plantar-patch p95 slip: 0.102 m/s right, 0.137 m/s left.
+- Contact-label precision/recall: 1.0/1.0 for both feet.
+- ProtoMotions MotionLib validation passed at 38 bodies and 33 state DOFs.
+
+A bounded Newton PPO epoch on this full bundle (32 environments, 1,024 collected frames)
+completed and saved a checkpoint. It had finite reward/losses, contact-match reward 0.973,
+and zero actor/critic bad-gradient counts. This is a runtime smoke test, not a converged
+policy evaluation.
+
 ## Capture ingestion
 
 Everything runs locally. The C3D parser itself needs no `ezc3d`, `c3d`, or web service;

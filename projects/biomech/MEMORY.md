@@ -673,6 +673,19 @@ biomech/
 - **M2e extensions** (mass + full 10-param inertial ID + GPU-batched residual DONE):
   remaining polish — batch the inertial **regressor across warp worlds**
   (blocked by `mjw.Model` sharing params across worlds), optional kinematic RRA.
+- **UNIFIED C3D -> PROTOMOTIONS PIPELINE DONE** (`c3d_to_protomotions.py`, 2026-08-07):
+  raw capture -> cleanup -> symmetric enriched Rajagopal calibration -> robust fixed-subject
+  IK -> foot-frame correction -> TM2OG -> measured grounding/contacts -> subject-mass MJCF
+  variants -> MotionLib/ordering/quality validation -> immutable source/input-hashed bundle.
+  Exact affine inertia scaling now avoids MuJoCo/Newton repair divergence; coupled-knee
+  followers remain state DOFs but are passive (25 physical PD actuators). Full S001 walk
+  frames 1469:7469 (6,000 frames / 59.99 s) passed: raw marker RMS 23.52 mm, anatomical
+  median 9.58 mm, corrected RMS 31.22 mm, mass 81.650018 kg, loaded GRF 1.003x BW,
+  plantar-patch p95 slip R/L 0.102/0.137 m/s, contact precision/recall 1.0. Bundle:
+  `outputs/biomech/biomech_s001_9778c180e2f4`. A bounded 32-env Newton PPO epoch completed,
+  saved a checkpoint, contact-match raw reward 0.973, and actor/critic bad-grad counts 0.
+  This verifies runtime wiring, not policy convergence. Dynamics/RRA remain diagnostic-only
+  until force-plate free-moment sign and wrench-preserving downsampling are validated.
 
 ## Regenerating goldens
 
