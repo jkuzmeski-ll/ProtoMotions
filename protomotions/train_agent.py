@@ -147,6 +147,14 @@ For temporary overrides, use a new experiment name.
 """
 
 
+def positive_int(value):
+    """Parse a strictly positive integer CLI value."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def create_parser():
     """Create and configure the argument parser."""
     parser = argparse.ArgumentParser(
@@ -212,6 +220,12 @@ def create_parser():
         help="Enable Weights & Biases logging",
     )
     parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="physical_animation",
+        help="Weights & Biases project name",
+    )
+    parser.add_argument(
         "--use-slurm",
         action="store_true",
         default=False,
@@ -240,11 +254,21 @@ def create_parser():
         default=False,
         help="Enable deterministic PyTorch operations",
     )
-    parser.add_argument(
+    training_limit_group = parser.add_mutually_exclusive_group()
+    training_limit_group.add_argument(
         "--training-max-steps",
         type=int,
         default=10000000000000,
         help="Maximum number of training steps. Default to 'loads of steps'.",
+    )
+    training_limit_group.add_argument(
+        "--training-max-iterations",
+        type=positive_int,
+        default=None,
+        help=(
+            "Maximum number of complete training iterations. Each iteration "
+            "collects one rollout and performs its optimization updates."
+        ),
     )
     parser.add_argument(
         "--overrides",
@@ -266,6 +290,10 @@ def create_parser():
 
 # Parse arguments first (argparse is safe, doesn't import torch)
 import argparse  # noqa: E402
+import faulthandler  # noqa: E402
+
+faulthandler.enable()
+
 from protomotions.utils.cli_utils import parse_bool  # noqa: E402
 
 parser = create_parser()
@@ -280,13 +308,16 @@ AppLauncher = import_simulator_before_torch(args.simulator)
 # Now safe to import everything else including torch
 from pathlib import Path  # noqa: E402
 import logging  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s: %(message)s")
+
 from protomotions.utils.hydra_replacement import get_class  # noqa: E402
 import importlib.util  # noqa: E402
 import shutil  # noqa: E402
 import wandb  # noqa: E402
 from lightning.pytorch.loggers import WandbLogger  # noqa: E402
 import torch  # noqa: E402
-from utils.torch_utils import seeding  # noqa: E402
+from protomotions.utils.torch_utils import seeding  # noqa: E402
 from dataclasses import asdict  # noqa: E402
 from protomotions.utils.config_utils import clean_dict_for_storage, make_json_serializable  # noqa: E402
 
@@ -358,11 +389,35 @@ def load_experiment_module(experiment_path):
 
     log.info(f"Loading experiment module from: {experiment_path}")
 
-    # Ensure the repo root is on sys.path so that experiment configs can import
-    # from sibling packages (e.g. `from examples.experiments.mimic... import ...`).
-    repo_root = str(Path(__file__).resolve().parent.parent)
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
+    # Ensure the experiment file's own project root is on sys.path so that
+    # experiment configs can import sibling packages (e.g.
+    # `from examples.experiments.mimic... import ...`).
+    #
+    # For an installed (non-editable) distribution, the package parent is
+    # site-packages and contains no `examples/`, so anchoring only there breaks
+    # every downstream user who keeps experiments outside the ProtoMotions
+    # source tree. Walk up from the experiment file to find the directory that
+    # actually owns it, and fall back to the package parent + cwd.
+    # Only the owning project root goes on sys.path (examples/ and
+    # examples/experiments/ are regular packages with __init__.py, so the
+    # intermediate directories are unnecessary and putting them ahead of the
+    # stdlib would let an experiment file shadow a real module).
+    project_root = next(
+        (
+            ancestor
+            for ancestor in experiment_path.resolve().parents
+            if (ancestor / "examples").is_dir()
+            or (ancestor / "pyproject.toml").is_file()
+        ),
+        None,
+    )
+    if project_root is not None and str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    # Fallbacks, appended so they cannot shadow anything already importable.
+    for fallback in (Path(__file__).resolve().parent.parent, Path.cwd()):
+        if str(fallback) not in sys.path:
+            sys.path.append(str(fallback))
 
     spec = importlib.util.spec_from_file_location("experiment_module", experiment_path)
     experiment_module = importlib.util.module_from_spec(spec)
@@ -504,6 +559,28 @@ def try_log_hyperparams_to_wandb(
                 log.warning(f"Could not log hyperparams to wandb (non-critical): {e}")
 
 
+def build_wandb_logger_config(args, save_dir, wandb_id):
+    """Build the WandB logger configuration from CLI arguments."""
+    return {
+        "_target_": "lightning.pytorch.loggers.WandbLogger",
+        "name": args.experiment_name,
+        "save_dir": save_dir,
+        "project": args.wandb_project,
+        "tags": None,
+        "group": None,
+        "id": wandb_id,
+        "entity": None,
+        "resume": "allow",
+    }
+
+
+def apply_training_iteration_limit(args, agent_config):
+    """Apply the optional CLI iteration limit to a freshly built agent config."""
+    max_iterations = args.training_max_iterations
+    if max_iterations is not None:
+        agent_config.training_max_iterations = max_iterations
+
+
 def main():
     global parser, args
     torch.set_float32_matmul_precision("high")
@@ -616,6 +693,8 @@ def main():
         env_config = configs["env"]
         agent_config = configs["agent"]
 
+        apply_training_iteration_limit(args, agent_config)
+
         # Apply CLI overrides (highest priority)
         # NOTE: These overrides are saved to resolved_configs.pt and become permanent!
         # True resume will use these overridden values.
@@ -668,25 +747,13 @@ def main():
     ]
 
     if args.use_wandb:
-        loggers.append(
-            {
-                "_target_": "lightning.pytorch.loggers.WandbLogger",
-                "name": args.experiment_name,
-                "save_dir": save_dir,
-                "project": "physical_animation",
-                "tags": None,
-                "group": None,
-                "id": wandb_id,
-                "entity": None,
-                "resume": "allow",
-            }
-        )
+        loggers.append(build_wandb_logger_config(args, save_dir, wandb_id))
 
     callbacks = []
     if args.use_slurm:
         callbacks.append(
             {
-                "_target_": "agents.callbacks.slurm_autoresume_srun.AutoResumeCallbackSrun",
+                "_target_": "protomotions.agents.callbacks.slurm_autoresume_srun.AutoResumeCallbackSrun",
                 "autoresume_after": 12600,
             }
         )

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from typing import Optional
+from protomotions.assets import resolve_asset_root
 from protomotions.components.terrains.terrain import Terrain
 from protomotions.robot_configs.base import RobotConfig
 import isaaclab.sim as sim_utils
@@ -120,7 +121,11 @@ class SceneCfg(InteractiveSceneCfg):
                         ),
                     ),
                     init_state=RigidObjectCfg.InitialStateCfg(
-                        pos=(0.0, 0.0, projectile_config.hide_z)
+                        pos=(
+                            float(proj_idx),
+                            float(proj_idx),
+                            projectile_config.hidden_z_for_index(proj_idx),
+                        )
                     ),
                 )
                 setattr(self, f"projectile_{proj_idx}", proj_cfg)
@@ -158,7 +163,7 @@ class SceneCfg(InteractiveSceneCfg):
         self.robot = ArticulationCfg(
             prim_path="/World/envs/env_.*/Robot",
             spawn=sim_utils.UsdFileCfg(
-                usd_path=f"{robot_config.asset.asset_root}/{robot_config.asset.usd_asset_file_name}",
+                usd_path=f"{resolve_asset_root(robot_config.asset.asset_root)}/{robot_config.asset.usd_asset_file_name}",
                 activate_contact_sensors=activate_contact_sensors,
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(
                     disable_gravity=robot_config.asset.disable_gravity,

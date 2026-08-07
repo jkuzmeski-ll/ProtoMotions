@@ -12,6 +12,7 @@ from torch import Tensor
 import numpy as np
 from rich.progress import Progress
 import os
+from protomotions.assets import get_asset_root, resolve_asset_root
 from protomotions.components.terrains.terrain import Terrain
 from protomotions.components.terrains.config import CombineMode
 from protomotions.components.scene_lib import (
@@ -109,7 +110,7 @@ class IsaacGymSimulator(Simulator):
         Called by base class _initialize_with_markers() after visualization markers
         are set. Creates simulation, viewer, and acquires tensors.
         """
-        # Scene construction below needs _proj_config before _init_projectiles runs
+        # Scene construction below needs _proj_config before _init_projectiles runs.
         self._resolve_proj_config()
 
         # Update marker names ordering from visualization markers
@@ -341,7 +342,7 @@ class IsaacGymSimulator(Simulator):
         Returns:
             Loaded asset handle (opaque gymapi handle)
         """
-        asset_root = self.robot_config.asset.asset_root
+        asset_root = resolve_asset_root(self.robot_config.asset.asset_root)
         asset_file = self.robot_config.asset.asset_file_name
         asset_path = os.path.join(asset_root, asset_file)
         asset_root = os.path.dirname(asset_path)
@@ -351,7 +352,10 @@ class IsaacGymSimulator(Simulator):
         return self._gym.load_asset(self._sim, asset_root, asset_file, asset_options)
 
     def _load_marker_asset(self) -> None:
-        asset_root = "protomotions/data/assets/urdf/"
+        # Visualization markers ship with the package, so they resolve against
+        # the packaged asset root rather than the robot's configurable
+        # asset_root (which downstream users may point at their own robots).
+        asset_root = os.path.join(get_asset_root(), "urdf")
         asset_file = "traj_marker.urdf"
         small_asset_file = "traj_marker_small.urdf"
         tiny_asset_file = "traj_marker_tiny.urdf"
@@ -976,7 +980,11 @@ class IsaacGymSimulator(Simulator):
 
         for proj_idx in range(self._proj_config.num_projectiles):
             start_pose = gymapi.Transform()
-            start_pose.p = gymapi.Vec3(0.0, 0.0, self._proj_config.hide_z)
+            start_pose.p = gymapi.Vec3(
+                env_id,
+                env_id,
+                self._proj_config.hidden_z_for_index(proj_idx),
+            )
             start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
 
             handle = self._gym.create_actor(
@@ -1393,6 +1401,12 @@ class IsaacGymSimulator(Simulator):
         """Set root state for specific projectiles via indexed tensor API."""
         # IsaacGym uses wxyz quaternion format
         rot_wxyz = rotations_xyzw[:, [3, 0, 1, 2]]
+        positions = positions.clone()
+        hidden_mask = positions[:, 2] <= self._proj_config.hide_z
+        if hidden_mask.any():
+            hidden_env_offsets = env_ids[hidden_mask].to(positions.dtype)
+            positions[hidden_mask, 0] = hidden_env_offsets
+            positions[hidden_mask, 1] = hidden_env_offsets
 
         self._projectile_root_states[env_ids, proj_indices, 0:3] = positions
         self._projectile_root_states[env_ids, proj_indices, 3:7] = rot_wxyz

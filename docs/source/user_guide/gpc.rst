@@ -24,9 +24,8 @@ frozen latent autoencoder:
    The tracker used for GPC must expose an FSQ bottleneck: its encoder maps
    target poses into finite scalar quantized codes, and its decoder maps
    generated FSQ codes back to robot actions. For a concrete training setup,
-   see ``examples/experiments/mimic/fsq.py``. That experiment is a motion
-   tracker configuration with an FSQ autoencoder in the actor, which is the
-   artifact the GPC prior later uses for token targets and decoding.
+   see ``examples/experiments/mimic/fsq.py``. That experiment trains the
+   motion tracker whose tokens and decoder are reused by the GPC prior.
 
 Prior
 ~~~~~
@@ -125,12 +124,12 @@ SFT adapter; resuming an RLFT run pins the resumed RLFT adapter.
 Common Commands
 ---------------
 
-The examples below use packaged SOMA assets from the repository:
+The examples use the packaged SOMA crouch motion and FSQ tracker:
 ``data/motion_for_trackers/crouch_soma23.pt`` and
 ``data/pretrained_models/motion_tracker/soma_bones_fsq/inference_last.ckpt``.
-A packaged GPC prior will be released separately; for now, use the first
-command to train the prior and pass that run's ``last.ckpt`` to the SFT/RLFT
-commands.
+A packaged GPC prior is available at
+``data/pretrained_models/gpc_prior/soma_bones/inference_last.ckpt``. Use it for
+SFT and RLFT, or train a prior with the first command below.
 
 Train the discrete GPC prior:
 
@@ -210,8 +209,8 @@ Checkpoint Roles During Training
 
 For the packaged SOMA assets, the tracker path is
 ``data/pretrained_models/motion_tracker/soma_bones_fsq/inference_last.ckpt``.
-The prior path should point to the ``last.ckpt`` produced by the prior-training
-command above.
+The packaged GPC prior is available at
+``data/pretrained_models/gpc_prior/soma_bones/inference_last.ckpt``.
 
 Inference
 ---------
@@ -244,7 +243,7 @@ Run inference directly from the PEFT run's slim checkpoint:
        --num-envs 16
 
 At inference, the PEFT run's ``resolved_configs_inference.pt`` builds the PEFT
-agent and points it at the frozen prior checkpoint from training. The slim PEFT checkpoint is
+agent and points it at the frozen prior checkpoint. The slim PEFT checkpoint is
 loaded onto that prior as adapter/task state. Updated prior checkpoints embed
 their own ``latent_decoder`` config (originally sourced from the tracker at
 prior-train time), so a separate tracker file is not required at PEFT inference
@@ -252,11 +251,11 @@ time.
 
 If you move the PEFT run to another machine, keep the PEFT
 ``resolved_configs_inference.pt`` next to ``inference_last.ckpt`` and override
-only the prior path to wherever you copied the trained prior checkpoint:
+only the prior path:
 
 .. code-block:: bash
 
-   --overrides agent.pretrained_modules.prior.checkpoint_path=/path/to/prior/last.ckpt
+   --overrides agent.pretrained_modules.prior.checkpoint_path=data/pretrained_models/gpc_prior/soma_bones/inference_last.ckpt
 
 The discrete-prior PEFT inference artifact is self-describing: ``--checkpoint``
 should point at the PEFT run's ``inference_last.ckpt``.

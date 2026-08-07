@@ -138,7 +138,114 @@ def test_train_agent_parser_and_bool_helpers(monkeypatch, tmp_path):
     )
     assert parsed.headless is False
     assert parsed.torch_deterministic is True
+    assert parsed.wandb_project == "physical_animation"
     assert parsed.create_config_only is True
+    assert parsed.training_max_iterations is None
+
+    parsed = parser.parse_args(
+        [
+            "--robot-name",
+            "g1",
+            "--simulator",
+            "newton",
+            "--num-envs",
+            "2",
+            "--batch-size",
+            "4",
+            "--motion-file",
+            "m.pt",
+            "--experiment-path",
+            "exp.py",
+            "--experiment-name",
+            "parser",
+            "--wandb-project",
+            "custom-project",
+        ]
+    )
+    assert parsed.wandb_project == "custom-project"
+
+    parsed = parser.parse_args(
+        [
+            "--robot-name",
+            "g1",
+            "--simulator",
+            "newton",
+            "--num-envs",
+            "2",
+            "--batch-size",
+            "4",
+            "--motion-file",
+            "m.pt",
+            "--experiment-path",
+            "exp.py",
+            "--experiment-name",
+            "parser",
+            "--training-max-iterations",
+            "30",
+        ]
+    )
+    assert parsed.training_max_iterations == 30
+
+    required_args = [
+        "--robot-name",
+        "g1",
+        "--simulator",
+        "newton",
+        "--num-envs",
+        "2",
+        "--batch-size",
+        "4",
+        "--motion-file",
+        "m.pt",
+        "--experiment-path",
+        "exp.py",
+        "--experiment-name",
+        "parser",
+    ]
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            required_args
+            + [
+                "--training-max-steps",
+                "100",
+                "--training-max-iterations",
+                "10",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(required_args + ["--training-max-iterations", "0"])
+
+
+def test_apply_training_iteration_limit(monkeypatch, tmp_path):
+    module = _load_train_agent_globals(monkeypatch, tmp_path)
+    config = SimpleNamespace(training_max_iterations=None)
+
+    module["apply_training_iteration_limit"](
+        SimpleNamespace(training_max_iterations=42), config
+    )
+    assert config.training_max_iterations == 42
+
+    module["apply_training_iteration_limit"](
+        SimpleNamespace(training_max_iterations=None), config
+    )
+    assert config.training_max_iterations == 42
+
+
+def test_build_wandb_logger_config_uses_cli_project(monkeypatch, tmp_path):
+    module = _load_train_agent_globals(monkeypatch, tmp_path)
+    config = module["build_wandb_logger_config"](
+        SimpleNamespace(
+            experiment_name="unit-run",
+            wandb_project="custom-project",
+        ),
+        tmp_path,
+        "wandb-id",
+    )
+
+    assert config["name"] == "unit-run"
+    assert config["project"] == "custom-project"
+    assert config["save_dir"] == tmp_path
+    assert config["id"] == "wandb-id"
 
 
 def test_detect_checkpoint_mode_handles_fresh_warm_start_and_resume(
@@ -475,6 +582,7 @@ def test_main_create_config_only_builds_configs_and_exits_before_training(
         overrides=[],
         ngpu=1,
         nodes=1,
+        training_max_iterations=None,
     )
     fake_experiment = SimpleNamespace(
         terrain_config=lambda: "terrain",
@@ -575,6 +683,7 @@ def test_main_config_only_registers_custom_args_and_applies_cli_overrides(
         overrides=["env.value=17"],
         ngpu=1,
         nodes=1,
+        training_max_iterations=None,
     )
 
     fake_parser = SimpleNamespace(
@@ -662,11 +771,13 @@ def test_main_fresh_training_path_wires_fabric_components_agent_and_saves(
         ngpu=2,
         nodes=1,
         use_wandb=True,
+        wandb_project="custom-project",
         use_slurm=True,
         simulator="isaacgym",
         headless=True,
         seed=10,
         torch_deterministic=True,
+        training_max_iterations=None,
     )
     robot_config = SimpleNamespace(_target_="robot.Target")
     simulator_config = SimpleNamespace(_target_="sim.Target")
@@ -869,6 +980,12 @@ def test_main_fresh_training_path_wires_fabric_components_agent_and_saves(
     assert build_call[1]["save_dir"] == "weights"
     fabric_call = next(call for call in calls if call[0] == "fabric_init")
     assert len(fabric_call[1]["loggers"]) == 2
+    wandb_logger = next(
+        logger
+        for logger in fabric_call[1]["loggers"]
+        if logger["_target_"].endswith("WandbLogger")
+    )
+    assert wandb_logger["project"] == "custom-project"
     assert len(fabric_call[1]["callbacks"]) == 1
 
 

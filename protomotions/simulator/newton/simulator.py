@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
+from protomotions.assets import resolve_asset_root
 from protomotions.simulator.base_simulator.simulator import Simulator
 from protomotions.simulator.base_simulator.config import (
     MarkerState,
@@ -178,7 +179,7 @@ class NewtonSimulator(Simulator):
         Follows the Newton G1 example pattern: configure joint properties
         on the builder BEFORE finalize, then use replicate() for multi-env.
         """
-        asset_root = self.robot_config.asset.asset_root
+        asset_root = resolve_asset_root(self.robot_config.asset.asset_root)
         asset_file = self.robot_config.asset.asset_file_name
         asset_path = os.path.join(asset_root, asset_file)
 
@@ -215,7 +216,11 @@ class NewtonSimulator(Simulator):
         for i in range(self._proj_config.num_projectiles):
             s = proj_sizes[i]
             xform = wp.transform(
-                (0.0, 0.0, self._proj_config.hide_z),
+                (
+                    float(i),
+                    float(i),
+                    self._proj_config.hidden_z_for_index(i),
+                ),
                 (0.0, 0.0, 0.0, 1.0),
             )
             body = self.robot.add_body(xform=xform)
@@ -372,7 +377,7 @@ class NewtonSimulator(Simulator):
         self.robot_view = ArticulationView(
             self.model,
             pattern="robot",
-            include_joints=self._newton_dof_names.keys(),
+            include_joints=list(self._newton_dof_names.keys()),
             include_links=self._body_names,
         )
 
@@ -1200,6 +1205,15 @@ class NewtonSimulator(Simulator):
 
         Newton uses xyzw quaternions natively — no conversion needed.
         """
+        # Keep hidden projectiles in distinct world-space slots. A throw has
+        # z > hide_z and therefore keeps its requested position.
+        positions = positions.clone()
+        hidden_mask = positions[:, 2] <= self._proj_config.hide_z
+        if hidden_mask.any():
+            hidden_env_offsets = env_ids[hidden_mask].to(positions.dtype)
+            positions[hidden_mask, 0] = hidden_env_offsets
+            positions[hidden_mask, 1] = hidden_env_offsets
+
         joint_q = wp.to_torch(self.state_0.joint_q)
         joint_qd = wp.to_torch(self.state_0.joint_qd)
 
