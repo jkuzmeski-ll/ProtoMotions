@@ -214,6 +214,11 @@ def test_biomech_robot_in_factory():
     assert cfg.number_of_actions == 33
     assert cfg.anchor_body_name == "torso"
     assert "calcn_l" in cfg.common_naming_to_robot_body_names["all_left_foot_bodies"]
+    assert 'balanceinertia="false"' in asset.read_text()
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_path(str(asset))
+    assert abs(float(model.body_mass[1:].sum()) - 81.65) < 1e-3
     passive = {
         name for name, info in cfg.control.control_info.items() if info.actuated is False
     }
