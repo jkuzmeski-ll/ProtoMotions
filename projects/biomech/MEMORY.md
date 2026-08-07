@@ -682,7 +682,7 @@ biomech/
   frames 1469:7469 (6,000 frames / 59.99 s) passed: raw marker RMS 23.52 mm, anatomical
   median 9.58 mm, corrected RMS 31.22 mm, mass 81.650018 kg, loaded GRF 1.003x BW,
   plantar-patch p95 slip R/L 0.102/0.137 m/s, contact precision/recall 1.0. Bundle:
-  `outputs/biomech/biomech_s001_f55f026db597`. A bounded 32-env Newton PPO epoch completed,
+  `outputs/biomech/biomech_s001_62222142c6cc`. A bounded 32-env Newton PPO epoch completed,
   saved a checkpoint, contact-match raw reward 0.973, and actor/critic bad-grad counts 0.
   This verifies runtime wiring, not policy convergence. Dynamics/RRA remain diagnostic-only
   until force-plate free-moment sign and wrench-preserving downsampling are validated.
